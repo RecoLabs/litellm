@@ -9,7 +9,9 @@ export interface AutoRouterTestTarget {
 }
 
 export interface BuildAutoRouterTestTargetsParams {
+  /** With a custom tier set, pass the EFFECTIVE record (removed built-ins emptied) - see effectiveComplexityTiers. */
   tiers: ComplexityTiers;
+  additionalTiers?: { name: string; models: string[] }[];
   semanticMatchingEnabled: boolean;
   embeddingModel: string | undefined;
   /** The resolved default model - see resolveComplexityDefaultModel. A live fallback destination,
@@ -28,12 +30,17 @@ const TIER_ORDER = Object.keys({
 
 export const buildAutoRouterTestTargets = ({
   tiers,
+  additionalTiers = [],
   semanticMatchingEnabled,
   embeddingModel,
   defaultModel,
 }: BuildAutoRouterTestTargetsParams): AutoRouterTestTarget[] => {
-  const tieredByModel = TIER_ORDER.reduce<Record<string, string[]>>((acc, tier) => {
-    return (tiers[tier] ?? []).reduce((tierAcc, rawModel) => {
+  const tierPools: [string, string[]][] = [
+    ...TIER_ORDER.map((tier): [string, string[]] => [tier, tiers[tier] ?? []]),
+    ...additionalTiers.map((tier): [string, string[]] => [tier.name, tier.models]),
+  ];
+  const tieredByModel = tierPools.reduce<Record<string, string[]>>((acc, [tier, models]) => {
+    return models.reduce((tierAcc, rawModel) => {
       const modelGroup = rawModel?.trim();
       if (!modelGroup) return tierAcc;
       return { ...tierAcc, [modelGroup]: [...(tierAcc[modelGroup] ?? []), tier] };

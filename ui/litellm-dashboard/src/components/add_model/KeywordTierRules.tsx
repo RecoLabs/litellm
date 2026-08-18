@@ -3,7 +3,7 @@ import { Button, Card, Empty, Select as AntdSelect, Tooltip, Typography } from "
 import React from "react";
 
 import { emptyKeywordTierRuleIndexes } from "./complexity_router_keywords";
-import { tierOptions } from "./complexity_router_tiers";
+import { defaultRuleTier, tierOptions } from "./complexity_router_tiers";
 
 const { Text } = Typography;
 
@@ -12,19 +12,21 @@ export type ComplexityTier = "SIMPLE" | "MEDIUM" | "COMPLEX" | "REASONING";
 export interface KeywordTierRule {
   id: string;
   keywords: string[];
-  tier: ComplexityTier;
+  /** A built-in tier name, or with a custom tier set, one of the defined tier names. */
+  tier: string;
 }
 
 interface KeywordTierRulesProps {
   rules: KeywordTierRule[];
   onChange: (rules: KeywordTierRule[]) => void;
   tierLabels?: Partial<Record<ComplexityTier, string>>;
+  tierNames?: string[];
 }
 
 // A row exists only because the caller asked for it, so it reports its own gap straight away
 // rather than waiting for a submit; the submit button is disabled while one is outstanding, so
 // there is no failed attempt left to surface it.
-const KeywordTierRules: React.FC<KeywordTierRulesProps> = ({ rules, onChange, tierLabels }) => {
+const KeywordTierRules: React.FC<KeywordTierRulesProps> = ({ rules, onChange, tierLabels, tierNames }) => {
   const emptyRuleIndexes = new Set(emptyKeywordTierRuleIndexes(rules));
   const [drafts, setDrafts] = React.useState<Record<string, string>>({});
 
@@ -52,7 +54,7 @@ const KeywordTierRules: React.FC<KeywordTierRulesProps> = ({ rules, onChange, ti
   };
 
   const addRule = () => {
-    onChange([...rules, { id: `${Date.now()}`, keywords: [], tier: "COMPLEX" }]);
+    onChange([...rules, { id: `${Date.now()}`, keywords: [], tier: defaultRuleTier(tierNames) }]);
   };
 
   const updateRule = (id: string, updates: Partial<Omit<KeywordTierRule, "id">>) => {
@@ -124,8 +126,8 @@ const KeywordTierRules: React.FC<KeywordTierRulesProps> = ({ rules, onChange, ti
                   </Text>
                   <AntdSelect
                     value={rule.tier}
-                    onChange={(tier: ComplexityTier) => updateRule(rule.id, { tier })}
-                    options={tierOptions(tierLabels)}
+                    onChange={(tier: string) => updateRule(rule.id, { tier })}
+                    options={tierOptions(tierLabels, tierNames)}
                     style={{ width: "100%" }}
                   />
                 </div>

@@ -325,9 +325,7 @@ class TestAutoRouterBenchmarks:
         from litellm.proxy.management_endpoints.auto_router_endpoints import _benchmark_totals
 
         totals = _benchmark_totals(self.ROW)
-        bucket_hits = (
-            totals.cache.same_model.hits + totals.cache.first_visit.hits + totals.cache.return_to_tier.hits
-        )
+        bucket_hits = totals.cache.same_model.hits + totals.cache.first_visit.hits + totals.cache.return_to_tier.hits
         assert bucket_hits == 27
         assert totals.cache.hit_rate_pct == pytest.approx(100.0 * 28 / 38, abs=0.1)
 
@@ -547,9 +545,7 @@ def _shadow_prisma(active_job=None, agg_rows=None) -> MagicMock:
     prisma.db.litellm_shadowevaljob.find_unique = AsyncMock(return_value=None)
     prisma.db.litellm_shadowevaljob.find_many = AsyncMock(return_value=[])
     prisma.db.litellm_shadowevaljob.create = AsyncMock(return_value=_job_record())
-    prisma.db.litellm_shadowevaljob.update = AsyncMock(
-        return_value=_job_record(stopped_at=datetime.now(timezone.utc))
-    )
+    prisma.db.litellm_shadowevaljob.update = AsyncMock(return_value=_job_record(stopped_at=datetime.now(timezone.utc)))
     prisma.db.litellm_shadowevalattempt.find_first = AsyncMock(return_value=None)
 
     async def query_raw(sql: str, *params: object):
@@ -745,9 +741,7 @@ async def test_get_shadow_eval_job_derives_counts_spend_and_stratified_results(m
     ]
     prisma = _shadow_prisma(agg_rows=tier_rows)
     prisma.db.litellm_shadowevaljob.find_unique = AsyncMock(return_value=_job_record())
-    prisma.db.litellm_shadowevalattempt.find_first = AsyncMock(
-        return_value=MagicMock(error="judge call failed: boom")
-    )
+    prisma.db.litellm_shadowevalattempt.find_first = AsyncMock(return_value=MagicMock(error="judge call failed: boom"))
     monkeypatch.setattr(proxy_server, "prisma_client", prisma)
 
     response = await get_shadow_eval_job("job-1", VIEWER)
@@ -856,3 +850,49 @@ async def test_stop_shadow_eval_sets_stopped_at_and_rejects_non_running(monkeypa
     with pytest.raises(HTTPException) as forbidden:
         await stop_shadow_eval_job("job-1", VIEWER)
     assert forbidden.value.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_validate_config_returns_the_write_gates_verdict_without_saving():
+    """The dry-run endpoint must agree with the write gate exactly, so a form showing its
+    verdict inline can never pass a config the save would then reject."""
+    from litellm.proxy.management_endpoints.auto_router_endpoints import (
+        validate_auto_router_config,
+    )
+    from litellm.types.management_endpoints.auto_router_endpoints import (
+        AutoRouterConfigValidationRequest,
+    )
+
+    valid = await validate_auto_router_config(
+        AutoRouterConfigValidationRequest(
+            complexity_router_config={
+                "tiers": {"CASUAL": "m1", "AUDIT": "m2"},
+                "tier_definitions": [
+                    {"name": "CASUAL", "description": "casual chat"},
+                    {"name": "AUDIT", "description": "security audits"},
+                ],
+                "fallback_tier": "AUDIT",
+                "classifier_type": "llm",
+                "classifier_llm_config": {"model": "clf"},
+            }
+        )
+    )
+    assert valid.valid is True
+    assert valid.error is None
+
+    rejected = await validate_auto_router_config(
+        AutoRouterConfigValidationRequest(
+            complexity_router_config={
+                "tiers": {"CASUAL": "m1", "AUDIT": "m2"},
+                "tier_definitions": [
+                    {"name": "CASUAL", "description": "casual chat"},
+                    {"name": "AUDIT", "description": "security\naudits"},
+                ],
+                "fallback_tier": "AUDIT",
+                "classifier_type": "llm",
+                "classifier_llm_config": {"model": "clf"},
+            }
+        )
+    )
+    assert rejected.valid is False
+    assert rejected.error is not None and "newline" in rejected.error

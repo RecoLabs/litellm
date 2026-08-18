@@ -41,7 +41,12 @@ import { isMaskedSecret, stripMaskedSecrets } from "../utils/maskedSecretUtils";
 import { formItemValidateJSON, truncateString } from "../utils/textUtils";
 import AutoRouterConnectionTest from "./add_model/auto_router_connection_test";
 import { AutoRouterTestTarget, buildAutoRouterTestTargets } from "./add_model/build_auto_router_test_targets";
-import { normalizeTierModels, resolveComplexityDefaultModel } from "./add_model/complexity_router_tiers";
+import {
+  customTierDefaultModel,
+  normalizeTierModels,
+  resolveComplexityDefaultModel,
+} from "./add_model/complexity_router_tiers";
+import { hydrateCustomTierSet } from "./add_model/build_complexity_router_config";
 import {
   hasAutoRouterEditor,
   isAutoRouterDeployment,
@@ -151,6 +156,8 @@ interface ComplexityRouterTierConfig {
     COMPLEX?: unknown;
     REASONING?: unknown;
   };
+  tier_definitions?: unknown;
+  fallback_tier?: unknown;
   semantic_keyword_matching?: boolean;
   embedding_model?: string;
   default_model?: string;
@@ -178,12 +185,14 @@ const buildComplexityRouterTestTargets = (
     config = rawConfig;
   }
 
-  const tiers = {
+  const rawTiers = {
     SIMPLE: normalizeTierModels(config.tiers?.SIMPLE),
     MEDIUM: normalizeTierModels(config.tiers?.MEDIUM),
     COMPLEX: normalizeTierModels(config.tiers?.COMPLEX),
     REASONING: normalizeTierModels(config.tiers?.REASONING),
   };
+  const customTierSet = hydrateCustomTierSet(config);
+  const tiers = customTierSet ? { SIMPLE: [], MEDIUM: [], COMPLEX: [], REASONING: [] } : rawTiers;
 
   // Mirrors init_complexity_router_deployment (litellm/router.py): litellm_params wins, otherwise
   // pure tier-derivation. complexity_router_config.default_model is a UI-only marker the backend
@@ -193,9 +202,12 @@ const buildComplexityRouterTestTargets = (
 
   const testTargetParams = {
     tiers,
+    additionalTiers: customTierSet?.tiers.map((row) => ({ name: row.name, models: row.models })),
     semanticMatchingEnabled: Boolean(config.semantic_keyword_matching),
     embeddingModel: config.embedding_model,
-    defaultModel: resolveComplexityDefaultModel(tiers, effectiveDefaultModel),
+    defaultModel: customTierSet
+      ? customTierDefaultModel(customTierSet, effectiveDefaultModel)
+      : resolveComplexityDefaultModel(tiers, effectiveDefaultModel),
   };
   return buildAutoRouterTestTargets(testTargetParams);
 };

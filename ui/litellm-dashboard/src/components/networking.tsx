@@ -2374,6 +2374,30 @@ export type AutoRouterRoutingTestResponse =
   | { status: "success"; result: AutoRouterRoutingTestResult }
   | { status: "error"; error: string };
 
+export interface AutoRouterConfigValidationResult {
+  valid: boolean;
+  error: string | null;
+}
+
+/**
+ * Dry-run the backend's own config validator, so a form can surface the exact verdict the save
+ * would produce. A transport failure resolves valid so a flaky network cannot block a save the
+ * write gate would accept; the write path still runs the same validator authoritatively.
+ */
+export const validateAutoRouterConfig = async (
+  accessToken: string,
+  complexityRouterConfig: ComplexityRouterConfigPayload | Record<string, unknown>,
+): Promise<AutoRouterConfigValidationResult> => {
+  try {
+    return await apiClient.post<AutoRouterConfigValidationResult>("/auto_router/validate_config", {
+      accessToken,
+      body: { complexity_router_config: complexityRouterConfig },
+    });
+  } catch {
+    return { valid: true, error: null };
+  }
+};
+
 export const testAutoRouterRouting = async (
   accessToken: string,
   request: AutoRouterRoutingTestRequest,
