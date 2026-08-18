@@ -261,9 +261,10 @@ class ShadowEvalResult(BaseModel):
 
 class ShadowEvalJobResponse(BaseModel):
     """A shadow-eval job. Validates directly from the prisma record (job_id reads the
-    row's id); status is derived from stopped_at and ends_at, never stored, so no writer
-    anywhere can produce an inconsistent one. Aggregate fields are populated by the
-    detail endpoint only and stay None on list responses."""
+    row's id); status is derived from stopped_at, ends_at, and attempt_count vs
+    max_turns, never stored, so no writer anywhere can produce an inconsistent one.
+    Aggregate fields are populated by the detail endpoint only and stay None on list
+    responses."""
 
     model_config = ConfigDict(from_attributes=True, populate_by_name=True)
 
@@ -286,6 +287,13 @@ class ShadowEvalJobResponse(BaseModel):
     created_at: datetime
     ends_at: datetime
     stopped_at: datetime | None = None
+    attempt_count: int | None = Field(
+        default=None,
+        description=(
+            "Sampled attempts so far, judged and errored alike, the same count the sampler budgets "
+            "against max_turns; populated on list and detail responses"
+        ),
+    )
 
     judged_count: int | None = Field(default=None, description="Verdicts recorded; detail endpoint only")
     error_count: int | None = Field(default=None, description="Sampled attempts that errored; detail endpoint only")
@@ -296,11 +304,14 @@ class ShadowEvalJobResponse(BaseModel):
     @computed_field
     @property
     def status(self) -> ShadowEvalStatus:
-        """A job whose window has passed reads completed even if a later sweep stamped
-        stopped_at; stopped means sampling ended before the window did."""
+        """A job reads completed once its window passes or its attempt budget is spent,
+        whether or not a sweep stamped stopped_at yet; stopped is reserved for a job
+        whose sampling was cut off before it finished."""
         if datetime.now(timezone.utc) >= (
             self.ends_at if self.ends_at.tzinfo else self.ends_at.replace(tzinfo=timezone.utc)
         ):
+            return "completed"
+        if self.attempt_count is not None and self.attempt_count >= self.max_turns:
             return "completed"
         if self.stopped_at is not None:
             return "stopped"

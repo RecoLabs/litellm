@@ -551,6 +551,7 @@ def _shadow_prisma(active_job=None, agg_rows=None) -> MagicMock:
         return_value=_job_record(stopped_at=datetime.now(timezone.utc))
     )
     prisma.db.litellm_shadowevalattempt.find_first = AsyncMock(return_value=None)
+    prisma.db.litellm_shadowevalattempt.group_by = AsyncMock(return_value=[])
 
     async def query_raw(sql: str, *params: object):
         if "FILTER (WHERE outcome != 'error')::int AS judged_count" in sql:
@@ -754,6 +755,7 @@ async def test_get_shadow_eval_job_derives_counts_spend_and_stratified_results(m
 
     assert response.job_id == "job-1"
     assert response.status == "running"
+    assert response.attempt_count == 12
     assert response.judged_count == 10
     assert response.error_count == 2
     assert response.judge_spend == 0.031
@@ -762,6 +764,10 @@ async def test_get_shadow_eval_job_derives_counts_spend_and_stratified_results(m
     assert response.results.by_tier[0].shadow_win_rate_pct == 50.0
     assert response.results.overall_shadow_win_rate_pct == 40.0
     assert response.results.overall_tie_rate_pct == 20.0
+
+    prisma.db.litellm_shadowevaljob.find_unique = AsyncMock(return_value=_job_record(max_turns=12))
+    exhausted = await get_shadow_eval_job("job-1", VIEWER)
+    assert exhausted.status == "completed"
 
 
 @pytest.mark.asyncio
@@ -810,6 +816,51 @@ async def test_list_shadow_eval_jobs_returns_derived_status_without_aggregates(m
 
 
 @pytest.mark.asyncio
+async def test_list_shadow_eval_jobs_reads_completed_once_turn_budget_is_spent(monkeypatch: pytest.MonkeyPatch):
+    """A job that exhausted its turn budget stopped sampling on its own, so it must read
+    completed on the very next list, before any sweep stamps stopped_at, and a job the
+    sweep did stamp after finishing must read completed rather than stopped: an operator
+    starting an unrelated eval must never look like it terminated this one."""
+    import litellm.proxy.proxy_server as proxy_server
+
+    prisma = _shadow_prisma()
+    prisma.db.litellm_shadowevaljob.find_many = AsyncMock(
+        return_value=[
+            _job_record(id="job-exhausted", max_turns=5),
+            _job_record(id="job-swept", max_turns=5, stopped_at=datetime.now(timezone.utc)),
+            _job_record(id="job-cut-short", max_turns=5, stopped_at=datetime.now(timezone.utc)),
+            _job_record(id="job-sampling", max_turns=5),
+        ]
+    )
+    prisma.db.litellm_shadowevalattempt.group_by = AsyncMock(
+        return_value=[
+            {"job_id": "job-exhausted", "_count": {"_all": 5}},
+            {"job_id": "job-swept", "_count": {"_all": 7}},
+            {"job_id": "job-cut-short", "_count": {"_all": 3}},
+            {"job_id": "job-sampling", "_count": {"_all": 4}},
+        ]
+    )
+    monkeypatch.setattr(proxy_server, "prisma_client", prisma)
+
+    jobs = await list_shadow_eval_jobs(VIEWER, api_key_id=None, limit=50)
+
+    assert {job.job_id: job.status for job in jobs} == {
+        "job-exhausted": "completed",
+        "job-swept": "completed",
+        "job-cut-short": "stopped",
+        "job-sampling": "running",
+    }
+    assert {job.job_id: job.attempt_count for job in jobs} == {
+        "job-exhausted": 5,
+        "job-swept": 7,
+        "job-cut-short": 3,
+        "job-sampling": 4,
+    }
+    grouped_where = prisma.db.litellm_shadowevalattempt.group_by.call_args.kwargs["where"]
+    assert grouped_where == {"job_id": {"in": ["job-exhausted", "job-swept", "job-cut-short", "job-sampling"]}}
+
+
+@pytest.mark.asyncio
 async def test_shadow_eval_responses_name_the_shadowed_key(monkeypatch: pytest.MonkeyPatch):
     import litellm.proxy.proxy_server as proxy_server
 
@@ -852,6 +903,13 @@ async def test_stop_shadow_eval_sets_stopped_at_and_rejects_non_running(monkeypa
     with pytest.raises(HTTPException) as exc:
         await stop_shadow_eval_job("job-1", ADMIN)
     assert exc.value.status_code == 400
+
+    prisma.db.litellm_shadowevaljob.find_unique = AsyncMock(return_value=_job_record(max_turns=3))
+    prisma.db.litellm_shadowevalattempt.group_by = AsyncMock(return_value=[{"job_id": "job-1", "_count": {"_all": 3}}])
+    with pytest.raises(HTTPException) as exhausted:
+        await stop_shadow_eval_job("job-1", ADMIN)
+    assert exhausted.value.status_code == 400
+    assert "completed" in exhausted.value.detail
 
     with pytest.raises(HTTPException) as forbidden:
         await stop_shadow_eval_job("job-1", VIEWER)

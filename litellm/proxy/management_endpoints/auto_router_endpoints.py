@@ -601,6 +601,28 @@ async def _with_key_labels(
     )
 
 
+async def _with_attempt_counts(
+    prisma_client: "PrismaClient", responses: Sequence[ShadowEvalJobResponse]
+) -> tuple[ShadowEvalJobResponse, ...]:
+    """Attach each job's total attempt count, judged and errored alike, in one grouped
+    read. It is the same count the sampler budgets against max_turns, so the derived
+    status flips to completed exactly when sampling actually ends."""
+    if not responses:
+        return ()
+    grouped: Final = await prisma_client.db.litellm_shadowevalattempt.group_by(
+        by=["job_id"],  # mutable-ok: Prisma group spec
+        count=True,
+        where={"job_id": {"in": [response.job_id for response in responses]}},  # mutable-ok: Prisma filter
+    )
+    counts: Final = MappingProxyType({str(row["job_id"]): int(row["_count"]["_all"]) for row in grouped or ()})
+    return tuple(
+        response.model_copy(
+            update={"attempt_count": counts.get(response.job_id, 0)}  # mutable-ok: pydantic update payload
+        )
+        for response in responses
+    )
+
+
 async def _shadow_eval_results(prisma_client: "PrismaClient", job_id: str) -> ShadowEvalResult | None:
     """Both stratifications of one job's verdicts. Tier answers "where does the router do
     well"; the model stratification groups by whichever model served the real arm, so it
@@ -729,7 +751,8 @@ async def list_shadow_eval_jobs(
     api_key_id: Annotated[str | None, Query(description="Filter to jobs shadowing this key")] = None,
     limit: Annotated[int, Query(ge=1, le=200, description="Newest jobs to return")] = 50,
 ) -> tuple[ShadowEvalJobResponse, ...]:
-    """List shadow eval jobs, newest first. Counts and results ride the detail endpoint only."""
+    """List shadow eval jobs, newest first, each with its attempt count so status is
+    accurate. Judged counts, spend, and results ride the detail endpoint only."""
     from litellm.proxy.proxy_server import prisma_client
 
     _require_admin_viewer(user_api_key_dict, "view shadow evals")
@@ -740,9 +763,12 @@ async def list_shadow_eval_jobs(
         order={"created_at": "desc"},  # mutable-ok: Prisma order
         take=limit,
     )
-    return await _with_key_labels(
+    return await _with_attempt_counts(
         prisma_client,
-        tuple(ShadowEvalJobResponse.model_validate(record, from_attributes=True) for record in records or ()),
+        await _with_key_labels(
+            prisma_client,
+            tuple(ShadowEvalJobResponse.model_validate(record, from_attributes=True) for record in records or ()),
+        ),
     )
 
 
@@ -779,6 +805,7 @@ async def get_shadow_eval_job(
     )
     return labeled[0].model_copy(
         update={  # mutable-ok: pydantic update payload
+            "attempt_count": (totals[0].judged_count + totals[0].error_count) if totals else 0,
             "judged_count": totals[0].judged_count if totals else 0,
             "error_count": totals[0].error_count if totals else 0,
             "judge_spend": round(totals[0].judge_spend, 6) if totals else 0.0,
@@ -809,7 +836,10 @@ async def stop_shadow_eval_job(
     )
     if record is None:
         raise HTTPException(status_code=404, detail=f"No shadow eval job {job_id}")
-    current: Final = ShadowEvalJobResponse.model_validate(record, from_attributes=True)
+    counted: Final = await _with_attempt_counts(
+        prisma_client, (ShadowEvalJobResponse.model_validate(record, from_attributes=True),)
+    )
+    current: Final = counted[0]
     if current.status != "running":
         raise HTTPException(status_code=400, detail=f"Job {job_id} is already {current.status}")
     updated: Final = await prisma_client.db.litellm_shadowevaljob.update(

@@ -816,7 +816,8 @@ export interface paths {
         };
         /**
          * List Shadow Eval Jobs
-         * @description List shadow eval jobs, newest first. Counts and results ride the detail endpoint only.
+         * @description List shadow eval jobs, newest first, each with its attempt count so status is
+         *     accurate. Judged counts, spend, and results ride the detail endpoint only.
          */
         get: operations["list_shadow_eval_jobs_auto_router_shadow_eval_get"];
         put?: never;
@@ -33191,9 +33192,10 @@ export interface components {
         /**
          * ShadowEvalJobResponse
          * @description A shadow-eval job. Validates directly from the prisma record (job_id reads the
-         *     row's id); status is derived from stopped_at and ends_at, never stored, so no writer
-         *     anywhere can produce an inconsistent one. Aggregate fields are populated by the
-         *     detail endpoint only and stay None on list responses.
+         *     row's id); status is derived from stopped_at, ends_at, and attempt_count vs
+         *     max_turns, never stored, so no writer anywhere can produce an inconsistent one.
+         *     Aggregate fields are populated by the detail endpoint only and stay None on list
+         *     responses.
          */
         ShadowEvalJobResponse: {
             /**
@@ -33201,6 +33203,11 @@ export interface components {
              * @description The hashed virtual key whose traffic this job evaluates, and only that key's
              */
             api_key_id: string;
+            /**
+             * Attempt Count
+             * @description Sampled attempts so far, judged and errored alike, the same count the sampler budgets against max_turns; populated on list and detail responses
+             */
+            attempt_count?: number | null;
             /** Baseline Model */
             baseline_model?: string | null;
             /**
@@ -33263,8 +33270,9 @@ export interface components {
             shadow_percentage: number;
             /**
              * Status
-             * @description A job whose window has passed reads completed even if a later sweep stamped
-             *     stopped_at; stopped means sampling ended before the window did.
+             * @description A job reads completed once its window passes or its attempt budget is spent,
+             *     whether or not a sweep stamped stopped_at yet; stopped is reserved for a job
+             *     whose sampling was cut off before it finished.
              * @enum {string}
              */
             readonly status: "running" | "completed" | "stopped";
