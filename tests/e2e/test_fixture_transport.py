@@ -40,6 +40,7 @@ from fixture_bundle import (
     slug_for_test,
 )
 from fixture_transport import (
+    SESSION_TEST_KEY,
     InvalidFixtureMode,
     RecordingTransport,
     ReplayMiss,
@@ -47,11 +48,14 @@ from fixture_transport import (
     ReplayTransport,
     current_test_key,
     deterministic_marker,
+    enter_non_function_fixture,
+    exit_non_function_fixture,
     fixture_mode_collection_error,
     fixture_report_lines,
     parse_fixture_mode,
     replay_leftover_error,
     select_transport,
+    wrap_fixture_setup,
 )
 from transport import Transport
 
@@ -237,6 +241,132 @@ class TestCurrentTestKey:
         key = current_test_key()
         assert key.endswith("TestCurrentTestKey::test_names_this_test_and_strips_the_phase")
         assert "(call)" not in key
+
+    def test_non_function_fixture_marker_wins_over_a_setup_phase_env_var(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Regression for LIT-5729: pytest sets PYTEST_CURRENT_TEST to the
+        triggering test even while a session-scoped fixture's setup body runs.
+        The non-function-fixture marker must route those recordings to the
+        session bucket, or replay depends on which test happened to be first."""
+        monkeypatch.setenv("PYTEST_CURRENT_TEST", "tests/e2e/batches/test_x.py::test_first (setup)")
+        assert current_test_key() == "tests/e2e/batches/test_x.py::test_first"
+        enter_non_function_fixture("batch_deployments")
+        try:
+            assert current_test_key() == SESSION_TEST_KEY
+        finally:
+            exit_non_function_fixture()
+        assert current_test_key() == "tests/e2e/batches/test_x.py::test_first"
+
+    def test_non_function_fixture_marker_wins_during_a_teardown_phase_env_var(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Session-scoped fixture teardown runs inside the last test's teardown
+        phase, so PYTEST_CURRENT_TEST is set. The marker must still win, or the
+        teardown traffic gets stored under whichever test happened to be last."""
+        monkeypatch.setenv("PYTEST_CURRENT_TEST", "tests/e2e/batches/test_x.py::test_last (teardown)")
+        enter_non_function_fixture("batch_deployments")
+        try:
+            assert current_test_key() == SESSION_TEST_KEY
+        finally:
+            exit_non_function_fixture()
+
+    def test_exit_tolerates_an_empty_stack_after_a_setup_failure(self) -> None:
+        """The hook registers the pop finalizer before the fixture body runs, so
+        a setup that raises before the paired push finalizer is registered still
+        leaves an orphan finalizer. Popping an empty stack must be a no-op or
+        scope teardown starts failing tests."""
+        exit_non_function_fixture()
+        assert current_test_key() == current_test_key()
+
+
+@dataclass
+class RecordedFinalizerRegistrar:
+    """Stand-in for a pytest ``FixtureDef``/``SubRequest``: records finalizers
+    in registration order and can replay them LIFO exactly like
+    ``FixtureDef.finish``, so a hook wrapper's teardown-time push/pop can be
+    verified without a live pytest session."""
+
+    finalizers: list[object] = field(default_factory=list)
+
+    def addfinalizer(self, finalizer: object) -> None:
+        self.finalizers.append(finalizer)
+
+    def finish(self) -> None:
+        while self.finalizers:
+            finalizer = self.finalizers.pop()
+            assert callable(finalizer)
+            finalizer()
+
+
+@dataclass(frozen=True)
+class FixtureStub:
+    scope: str
+    argname: str
+
+
+class TestWrapFixtureSetup:
+    """The hook wrapper the shared conftest installs (LIT-5729): mechanism
+    coverage that pins how setup and teardown of a non-function-scoped fixture
+    are wrapped, using stubs that expose ``FixtureDef``/``SubRequest`` behavior
+    without a live pytest session."""
+
+    def test_function_scoped_fixture_never_touches_the_marker(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("PYTEST_CURRENT_TEST", "tests/e2e/suite.py::test_fn (setup)")
+        registrar = RecordedFinalizerRegistrar()
+        generator = wrap_fixture_setup(FixtureStub(scope="function", argname="scoped_key"), registrar)
+        next(generator)
+        assert current_test_key() == "tests/e2e/suite.py::test_fn"
+        with pytest.raises(StopIteration):
+            generator.send(None)
+        assert registrar.finalizers == []
+
+    @pytest.mark.parametrize("scope", ["session", "module", "class", "package"])
+    def test_non_function_scope_marks_setup_and_wires_teardown_around_the_body(
+        self, scope: str, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Setup phase (during the yield): marker is active, and the pop
+        finalizer is already registered before the fixture body runs, so it
+        will run LAST at teardown. Teardown phase (finalizers replay LIFO): the
+        marker is active during the fixture body's own yield-teardown, then
+        popped last, so the stack is empty after teardown even when
+        PYTEST_CURRENT_TEST is still set to the triggering test."""
+        monkeypatch.setenv("PYTEST_CURRENT_TEST", "tests/e2e/suite.py::test_first (setup)")
+        registrar = RecordedFinalizerRegistrar()
+        generator = wrap_fixture_setup(FixtureStub(scope=scope, argname="session_fx"), registrar)
+        next(generator)
+        assert current_test_key() == SESSION_TEST_KEY
+
+        body_teardown_key: dict[str, str] = {}
+        registrar.addfinalizer(lambda: body_teardown_key.update(observed=current_test_key()))
+
+        with pytest.raises(StopIteration):
+            generator.send(None)
+        assert current_test_key() == "tests/e2e/suite.py::test_first"
+
+        monkeypatch.setenv("PYTEST_CURRENT_TEST", "tests/e2e/suite.py::test_last (teardown)")
+        registrar.finish()
+        assert body_teardown_key["observed"] == SESSION_TEST_KEY
+        assert current_test_key() == "tests/e2e/suite.py::test_last"
+
+    def test_setup_failure_still_leaves_the_stack_clean_after_scope_teardown(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """When the fixture body raises before yielding, the paired push
+        finalizer is never registered but the pop finalizer is: replaying
+        finalizers must still leave the marker stack empty."""
+        monkeypatch.setenv("PYTEST_CURRENT_TEST", "tests/e2e/suite.py::test_x (setup)")
+        registrar = RecordedFinalizerRegistrar()
+        generator = wrap_fixture_setup(FixtureStub(scope="session", argname="broken_fx"), registrar)
+        next(generator)
+        assert current_test_key() == SESSION_TEST_KEY
+        with pytest.raises(RuntimeError, match="setup exploded"):
+            generator.throw(RuntimeError("setup exploded"))
+        assert current_test_key() == "tests/e2e/suite.py::test_x"
+        registrar.finish()
+        assert current_test_key() == "tests/e2e/suite.py::test_x"
 
 
 class TestRecordingTransport:

@@ -18,10 +18,11 @@ from __future__ import annotations
 import functools
 import hashlib
 import os
+from collections.abc import Callable, Generator
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Final, Literal, assert_never
+from typing import Final, Literal, Protocol, assert_never
 
 from pydantic import BaseModel
 
@@ -75,14 +76,76 @@ def parse_fixture_mode(raw: str) -> FixtureMode | InvalidFixtureMode:
             return InvalidFixtureMode(value=raw)
 
 
+_active_non_function_fixtures: Final[list[str]] = []
+
+
+def enter_non_function_fixture(name: str) -> None:
+    """Mark that a non-function-scoped fixture's setup or teardown body is now
+    running, so ``current_test_key`` routes recordings inside it to the session
+    bucket instead of whichever test happens to trigger the fixture. Paired with
+    ``exit_non_function_fixture`` by the ``pytest_fixture_setup`` hook wrapper
+    in the shared e2e conftest."""
+    _active_non_function_fixtures.append(name)
+
+
+def exit_non_function_fixture() -> None:
+    """Pop a marker pushed by ``enter_non_function_fixture``. Tolerates an empty
+    stack so a fixture whose setup raised (leaving its teardown finalizers
+    unregistered) still winds down cleanly at scope teardown."""
+    if _active_non_function_fixtures:
+        _active_non_function_fixtures.pop()
+
+
 def current_test_key() -> str:
     """The pytest node id of the running test, from the PYTEST_CURRENT_TEST env
     var pytest maintains (``<nodeid> (setup|call|teardown)``); ``session`` for
-    calls outside any test (e.g. session-finish cleanup)."""
+    calls outside any test (e.g. session-finish cleanup) and for the setup or
+    teardown body of any non-function-scoped fixture, so a session fixture's
+    traffic (for example ``batch_deployments`` model create/delete) never gets
+    miskeyed to whichever test happens to trigger it."""
+    if _active_non_function_fixtures:
+        return SESSION_TEST_KEY
     raw = os.environ.get("PYTEST_CURRENT_TEST", "")
     if not raw:
         return SESSION_TEST_KEY
     return raw.rsplit(" (", 1)[0]
+
+
+class _FixtureSetupContext(Protocol):
+    @property
+    def scope(self) -> str: ...
+    @property
+    def argname(self) -> str: ...
+
+
+class _FinalizerRegistrar(Protocol):
+    def addfinalizer(self, finalizer: Callable[[], object]) -> None: ...
+
+
+def wrap_fixture_setup(
+    fixturedef: _FixtureSetupContext, request: _FinalizerRegistrar
+) -> Generator[None, object, object]:
+    """The body of the shared conftest's ``pytest_fixture_setup`` hook wrapper,
+    split out so it can be exercised with plain stubs. Function-scoped fixtures
+    pass straight through so their traffic still keys to the calling test. For
+    every other scope, enter/exit the non-function-fixture marker around setup
+    and register finalizers so teardown is wrapped the same way.
+
+    Ordering relies on ``FixtureDef._finalizers`` popping LIFO: the exit
+    finalizer is registered before the yield so it runs LAST at scope teardown,
+    and the enter finalizer is registered after the yield so it runs FIRST,
+    wrapping the fixture body's own yield-teardown finalizer between them."""
+    if fixturedef.scope == "function":
+        return (yield)
+    name: Final = fixturedef.argname
+    request.addfinalizer(exit_non_function_fixture)
+    enter_non_function_fixture(name)
+    try:
+        result: Final = yield
+    finally:
+        exit_non_function_fixture()
+    request.addfinalizer(functools.partial(enter_non_function_fixture, name))
+    return result
 
 
 class ReplayMiss(AssertionError):

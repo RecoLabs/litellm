@@ -28,6 +28,7 @@ from fixture_transport import (
     fixture_report_lines,
     parse_fixture_mode,
     replay_leftover_error,
+    wrap_fixture_setup,
 )
 from junit_properties import attach_result_properties
 from lifecycle import ProxyClientProvider, ResourceManager
@@ -55,6 +56,17 @@ def pytest_configure(config: pytest.Config) -> None:
         "markers",
         "weekly: real-provider anomaly load test that spends real money; deselected unless E2E_WEEKLY_ANOMALY is set",
     )
+
+
+@pytest.hookimpl(wrapper=True)
+def pytest_fixture_setup(
+    fixturedef: pytest.FixtureDef[object], request: pytest.FixtureRequest
+) -> Generator[None, object, object]:
+    """Route recordings made inside a non-function-scoped fixture's setup or
+    teardown to the session bucket instead of whichever test happens to trigger
+    them (LIT-5729). The wrapping is in ``wrap_fixture_setup`` so it can be
+    exercised with plain stubs without spinning up a pytest session."""
+    return (yield from wrap_fixture_setup(fixturedef, request))
 
 
 def pytest_sessionstart(session: pytest.Session) -> None:
