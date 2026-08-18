@@ -551,11 +551,14 @@ def _shadow_prisma(active_job=None, agg_rows=None) -> MagicMock:
         return_value=_job_record(stopped_at=datetime.now(timezone.utc))
     )
     prisma.db.litellm_shadowevalattempt.find_first = AsyncMock(return_value=None)
-    prisma.db.litellm_shadowevalattempt.group_by = AsyncMock(return_value=[])
+    prisma.attempt_rows = []
 
     async def query_raw(sql: str, *params: object):
         if "FILTER (WHERE outcome != 'error')::int AS judged_count" in sql:
             return [{"judged_count": 10, "error_count": 2, "judge_spend": 0.031}]
+        if "AS attempt_count" in sql:
+            assert "j.stopped_at IS NULL OR a.created_at <= j.stopped_at" in sql
+            return prisma.attempt_rows
         return agg_rows if agg_rows is not None else []
 
     prisma.db.query_raw = AsyncMock(side_effect=query_raw)
@@ -592,7 +595,8 @@ async def test_start_shadow_eval_creates_job_and_frees_expired_or_exhausted_ones
     assert response.judged_count is None
     sweep_sql, sweep_key = prisma.db.execute_raw.call_args.args
     assert "stopped_at IS NULL" in sweep_sql
-    assert "ends_at <= NOW()" in sweep_sql
+    assert "ends_at <= (NOW() AT TIME ZONE 'utc')" in sweep_sql
+    assert "SET stopped_at = (NOW() AT TIME ZONE 'utc')" in sweep_sql
     assert ">= j.max_turns" in sweep_sql
     assert sweep_key == "key-hash"
     create_data = prisma.db.litellm_shadowevaljob.create.call_args.kwargs["data"]
@@ -745,6 +749,7 @@ async def test_get_shadow_eval_job_derives_counts_spend_and_stratified_results(m
         {"grp": "REASONING", "turn_count": 2, "real_wins": 2, "shadow_wins": 0, "ties": 0, "avg_confidence": 0.9},
     ]
     prisma = _shadow_prisma(agg_rows=tier_rows)
+    prisma.attempt_rows = [{"job_id": "job-1", "attempt_count": 12}]
     prisma.db.litellm_shadowevaljob.find_unique = AsyncMock(return_value=_job_record())
     prisma.db.litellm_shadowevalattempt.find_first = AsyncMock(
         return_value=MagicMock(error="judge call failed: boom")
@@ -768,6 +773,14 @@ async def test_get_shadow_eval_job_derives_counts_spend_and_stratified_results(m
     prisma.db.litellm_shadowevaljob.find_unique = AsyncMock(return_value=_job_record(max_turns=12))
     exhausted = await get_shadow_eval_job("job-1", VIEWER)
     assert exhausted.status == "completed"
+
+    prisma.db.litellm_shadowevaljob.find_unique = AsyncMock(
+        return_value=_job_record(max_turns=12, stopped_at=datetime.now(timezone.utc))
+    )
+    prisma.attempt_rows = [{"job_id": "job-1", "attempt_count": 11}]
+    stopped = await get_shadow_eval_job("job-1", VIEWER)
+    assert stopped.status == "stopped"
+    assert stopped.attempt_count == 11
 
 
 @pytest.mark.asyncio
@@ -812,7 +825,7 @@ async def test_list_shadow_eval_jobs_returns_derived_status_without_aggregates(m
     )
     assert swept.status == "completed"
     assert all(job.judged_count is None and job.results is None for job in jobs)
-    assert prisma.db.query_raw.await_count == 0
+    assert prisma.db.query_raw.await_count == 1
 
 
 @pytest.mark.asyncio
@@ -832,14 +845,12 @@ async def test_list_shadow_eval_jobs_reads_completed_once_turn_budget_is_spent(m
             _job_record(id="job-sampling", max_turns=5),
         ]
     )
-    prisma.db.litellm_shadowevalattempt.group_by = AsyncMock(
-        return_value=[
-            {"job_id": "job-exhausted", "_count": {"_all": 5}},
-            {"job_id": "job-swept", "_count": {"_all": 7}},
-            {"job_id": "job-cut-short", "_count": {"_all": 3}},
-            {"job_id": "job-sampling", "_count": {"_all": 4}},
-        ]
-    )
+    prisma.attempt_rows = [
+        {"job_id": "job-exhausted", "attempt_count": 5},
+        {"job_id": "job-swept", "attempt_count": 7},
+        {"job_id": "job-cut-short", "attempt_count": 3},
+        {"job_id": "job-sampling", "attempt_count": 4},
+    ]
     monkeypatch.setattr(proxy_server, "prisma_client", prisma)
 
     jobs = await list_shadow_eval_jobs(VIEWER, api_key_id=None, limit=50)
@@ -856,8 +867,9 @@ async def test_list_shadow_eval_jobs_reads_completed_once_turn_budget_is_spent(m
         "job-cut-short": 3,
         "job-sampling": 4,
     }
-    grouped_where = prisma.db.litellm_shadowevalattempt.group_by.call_args.kwargs["where"]
-    assert grouped_where == {"job_id": {"in": ["job-exhausted", "job-swept", "job-cut-short", "job-sampling"]}}
+    (counts_sql, counted_ids) = prisma.db.query_raw.call_args.args
+    assert "j.stopped_at IS NULL OR a.created_at <= j.stopped_at" in counts_sql
+    assert counted_ids == ["job-exhausted", "job-swept", "job-cut-short", "job-sampling"]
 
 
 @pytest.mark.asyncio
@@ -905,7 +917,7 @@ async def test_stop_shadow_eval_sets_stopped_at_and_rejects_non_running(monkeypa
     assert exc.value.status_code == 400
 
     prisma.db.litellm_shadowevaljob.find_unique = AsyncMock(return_value=_job_record(max_turns=3))
-    prisma.db.litellm_shadowevalattempt.group_by = AsyncMock(return_value=[{"job_id": "job-1", "_count": {"_all": 3}}])
+    prisma.attempt_rows = [{"job_id": "job-1", "attempt_count": 3}]
     with pytest.raises(HTTPException) as exhausted:
         await stop_shadow_eval_job("job-1", ADMIN)
     assert exhausted.value.status_code == 400

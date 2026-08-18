@@ -33205,7 +33205,7 @@ export interface components {
             api_key_id: string;
             /**
              * Attempt Count
-             * @description Sampled attempts so far, judged and errored alike, the same count the sampler budgets against max_turns; populated on list and detail responses
+             * @description Attempts recorded while the job was sampling, judged and errored alike, the count the sampler budgets against max_turns; for a stopped job, attempts a detached task recorded after the stop are excluded, so a stop is never reclassified as budget completion. List and detail responses
              */
             attempt_count?: number | null;
             /** Baseline Model */
@@ -33272,7 +33272,8 @@ export interface components {
              * Status
              * @description A job reads completed once its window passes or its attempt budget is spent,
              *     whether or not a sweep stamped stopped_at yet; stopped is reserved for a job
-             *     whose sampling was cut off before it finished.
+             *     whose sampling was cut off before it finished. attempt_count only counts attempts
+             *     recorded before any stop, so an explicit stop cannot read as completion.
              * @enum {string}
              */
             readonly status: "running" | "completed" | "stopped";

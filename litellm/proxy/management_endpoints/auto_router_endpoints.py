@@ -529,13 +529,29 @@ _ATTEMPT_AGG_BY_TIER_SQL: Final = "SELECT COALESCE(tier, 'UNCLASSIFIED') AS grp,
 _ATTEMPT_AGG_BY_MODEL_SQL: Final = "SELECT COALESCE(real_model, 'unknown') AS grp," + _ATTEMPT_AGG_SELECT
 
 _SWEEP_FINISHED_JOBS_SQL: Final = """
-UPDATE "LiteLLM_ShadowEvalJob" j SET stopped_at = NOW()
+UPDATE "LiteLLM_ShadowEvalJob" j SET stopped_at = (NOW() AT TIME ZONE 'utc')
 WHERE j.api_key_id = $1 AND j.stopped_at IS NULL
   AND (
-    j.ends_at <= NOW()
+    j.ends_at <= (NOW() AT TIME ZONE 'utc')
     OR (SELECT COUNT(*) FROM "LiteLLM_ShadowEvalAttempt" a WHERE a.job_id = j.id) >= j.max_turns
   )
 """
+
+_LIVE_ATTEMPT_COUNTS_SQL: Final = """
+SELECT a.job_id, COUNT(*)::int AS attempt_count
+FROM "LiteLLM_ShadowEvalAttempt" a
+JOIN "LiteLLM_ShadowEvalJob" j ON j.id = a.job_id
+WHERE a.job_id = ANY($1::text[]) AND (j.stopped_at IS NULL OR a.created_at <= j.stopped_at)
+GROUP BY a.job_id
+"""
+
+
+class _LiveAttemptCountRow(BaseModel):
+    job_id: str
+    attempt_count: int
+
+
+_LIVE_ATTEMPT_COUNT_ROWS: Final = TypeAdapter(list[_LiveAttemptCountRow])
 
 _ATTEMPT_TOTALS_SQL: Final = """
 SELECT
@@ -604,17 +620,20 @@ async def _with_key_labels(
 async def _with_attempt_counts(
     prisma_client: "PrismaClient", responses: Sequence[ShadowEvalJobResponse]
 ) -> tuple[ShadowEvalJobResponse, ...]:
-    """Attach each job's total attempt count, judged and errored alike, in one grouped
-    read. It is the same count the sampler budgets against max_turns, so the derived
-    status flips to completed exactly when sampling actually ends."""
+    """Attach each job's live attempt count, judged and errored alike, in one grouped
+    read. It counts what the sampler budgets against max_turns, but for a stopped job
+    only the attempts recorded up to the stop: a detached attempt landing after
+    stopped_at must not reclassify an operator's stop as budget completion."""
     if not responses:
         return ()
-    grouped: Final = await prisma_client.db.litellm_shadowevalattempt.group_by(
-        by=["job_id"],  # mutable-ok: Prisma group spec
-        count=True,
-        where={"job_id": {"in": [response.job_id for response in responses]}},  # mutable-ok: Prisma filter
+    rows: Final = _LIVE_ATTEMPT_COUNT_ROWS.validate_python(
+        await prisma_client.db.query_raw(
+            _LIVE_ATTEMPT_COUNTS_SQL,
+            [response.job_id for response in responses],  # mutable-ok: query param
+        )
+        or ()
     )
-    counts: Final = MappingProxyType({str(row["job_id"]): int(row["_count"]["_all"]) for row in grouped or ()})
+    counts: Final = MappingProxyType({row.job_id: row.attempt_count for row in rows})
     return tuple(
         response.model_copy(
             update={"attempt_count": counts.get(response.job_id, 0)}  # mutable-ok: pydantic update payload
@@ -800,12 +819,12 @@ async def get_shadow_eval_job(
         where={"job_id": job_id, "outcome": "error"},  # mutable-ok: Prisma filter
         order={"created_at": "desc"},  # mutable-ok: Prisma order
     )
-    labeled: Final = await _with_key_labels(
-        prisma_client, (ShadowEvalJobResponse.model_validate(record, from_attributes=True),)
+    counted: Final = await _with_attempt_counts(
+        prisma_client,
+        await _with_key_labels(prisma_client, (ShadowEvalJobResponse.model_validate(record, from_attributes=True),)),
     )
-    return labeled[0].model_copy(
+    return counted[0].model_copy(
         update={  # mutable-ok: pydantic update payload
-            "attempt_count": (totals[0].judged_count + totals[0].error_count) if totals else 0,
             "judged_count": totals[0].judged_count if totals else 0,
             "error_count": totals[0].error_count if totals else 0,
             "judge_spend": round(totals[0].judge_spend, 6) if totals else 0.0,
