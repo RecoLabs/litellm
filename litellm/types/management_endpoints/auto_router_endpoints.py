@@ -261,8 +261,8 @@ class ShadowEvalResult(BaseModel):
 
 class ShadowEvalJobResponse(BaseModel):
     """A shadow-eval job. Validates directly from the prisma record (job_id reads the
-    row's id); status is derived from stopped_at, ends_at, and attempt_count vs
-    max_turns, never stored, so no writer anywhere can produce an inconsistent one.
+    row's id); status is derived from stopped_by, stopped_at, ends_at, and attempt_count
+    vs max_turns, never stored, so no writer anywhere can produce an inconsistent one.
     Aggregate fields are populated by the detail endpoint only and stay None on list
     responses."""
 
@@ -287,12 +287,18 @@ class ShadowEvalJobResponse(BaseModel):
     created_at: datetime
     ends_at: datetime
     stopped_at: datetime | None = None
+    stopped_by: str | None = Field(
+        default=None,
+        description=(
+            "The operator who stopped the job early, recorded by the stop endpoint; None when the job "
+            "ended on its own. Its presence is what makes a job read stopped rather than completed"
+        ),
+    )
     attempt_count: int | None = Field(
         default=None,
         description=(
-            "Attempts recorded while the job was sampling, judged and errored alike, the count the sampler "
-            "budgets against max_turns; for a stopped job, attempts a detached task recorded after the stop "
-            "are excluded, so a stop is never reclassified as budget completion. List and detail responses"
+            "Sampled attempts so far, judged and errored alike, the same count the sampler budgets "
+            "against max_turns; populated on list and detail responses"
         ),
     )
 
@@ -305,10 +311,13 @@ class ShadowEvalJobResponse(BaseModel):
     @computed_field
     @property
     def status(self) -> ShadowEvalStatus:
-        """A job reads completed once its window passes or its attempt budget is spent,
-        whether or not a sweep stamped stopped_at yet; stopped is reserved for a job
-        whose sampling was cut off before it finished. attempt_count only counts attempts
-        recorded before any stop, so an explicit stop cannot read as completion."""
+        """An operator's stop is a recorded fact, not an inference: a job with stopped_by
+        reads stopped permanently, and no attempt landing around the stop can reclassify
+        it as completed. A job without one reads completed once its window passes or its
+        attempt budget is spent, whether or not a sweep stamped stopped_at yet; bare
+        stopped_at covers rows stamped before stopped_by existed."""
+        if self.stopped_by is not None:
+            return "stopped"
         if datetime.now(timezone.utc) >= (
             self.ends_at if self.ends_at.tzinfo else self.ends_at.replace(tzinfo=timezone.utc)
         ):

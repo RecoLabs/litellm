@@ -520,6 +520,7 @@ def _job_record(**overrides: object) -> MagicMock:
         "created_at": datetime(2026, 8, 11, tzinfo=timezone.utc),
         "ends_at": datetime.now(timezone.utc) + timedelta(days=7),
         "stopped_at": None,
+        "stopped_by": None,
     }
     fields = {**defaults, **overrides}
     record = MagicMock(spec=list(fields))
@@ -548,7 +549,7 @@ def _shadow_prisma(active_job=None, agg_rows=None) -> MagicMock:
     prisma.db.litellm_shadowevaljob.find_many = AsyncMock(return_value=[])
     prisma.db.litellm_shadowevaljob.create = AsyncMock(return_value=_job_record())
     prisma.db.litellm_shadowevaljob.update = AsyncMock(
-        return_value=_job_record(stopped_at=datetime.now(timezone.utc))
+        return_value=_job_record(stopped_at=datetime.now(timezone.utc), stopped_by="admin")
     )
     prisma.db.litellm_shadowevalattempt.find_first = AsyncMock(return_value=None)
     prisma.attempt_rows = []
@@ -557,7 +558,6 @@ def _shadow_prisma(active_job=None, agg_rows=None) -> MagicMock:
         if "FILTER (WHERE outcome != 'error')::int AS judged_count" in sql:
             return [{"judged_count": 10, "error_count": 2, "judge_spend": 0.031}]
         if "AS attempt_count" in sql:
-            assert "j.stopped_at IS NULL OR a.created_at <= j.stopped_at" in sql
             return prisma.attempt_rows
         return agg_rows if agg_rows is not None else []
 
@@ -775,12 +775,11 @@ async def test_get_shadow_eval_job_derives_counts_spend_and_stratified_results(m
     assert exhausted.status == "completed"
 
     prisma.db.litellm_shadowevaljob.find_unique = AsyncMock(
-        return_value=_job_record(max_turns=12, stopped_at=datetime.now(timezone.utc))
+        return_value=_job_record(max_turns=12, stopped_at=datetime.now(timezone.utc), stopped_by="admin")
     )
-    prisma.attempt_rows = [{"job_id": "job-1", "attempt_count": 11}]
     stopped = await get_shadow_eval_job("job-1", VIEWER)
     assert stopped.status == "stopped"
-    assert stopped.attempt_count == 11
+    assert stopped.attempt_count == 12
 
 
 @pytest.mark.asyncio
@@ -842,6 +841,12 @@ async def test_list_shadow_eval_jobs_reads_completed_once_turn_budget_is_spent(m
             _job_record(id="job-exhausted", max_turns=5),
             _job_record(id="job-swept", max_turns=5, stopped_at=datetime.now(timezone.utc)),
             _job_record(id="job-cut-short", max_turns=5, stopped_at=datetime.now(timezone.utc)),
+            _job_record(
+                id="job-operator-stopped",
+                max_turns=5,
+                stopped_at=datetime.now(timezone.utc),
+                stopped_by="admin",
+            ),
             _job_record(id="job-sampling", max_turns=5),
         ]
     )
@@ -849,6 +854,7 @@ async def test_list_shadow_eval_jobs_reads_completed_once_turn_budget_is_spent(m
         {"job_id": "job-exhausted", "attempt_count": 5},
         {"job_id": "job-swept", "attempt_count": 7},
         {"job_id": "job-cut-short", "attempt_count": 3},
+        {"job_id": "job-operator-stopped", "attempt_count": 6},
         {"job_id": "job-sampling", "attempt_count": 4},
     ]
     monkeypatch.setattr(proxy_server, "prisma_client", prisma)
@@ -859,17 +865,18 @@ async def test_list_shadow_eval_jobs_reads_completed_once_turn_budget_is_spent(m
         "job-exhausted": "completed",
         "job-swept": "completed",
         "job-cut-short": "stopped",
+        "job-operator-stopped": "stopped",
         "job-sampling": "running",
     }
     assert {job.job_id: job.attempt_count for job in jobs} == {
         "job-exhausted": 5,
         "job-swept": 7,
         "job-cut-short": 3,
+        "job-operator-stopped": 6,
         "job-sampling": 4,
     }
-    (counts_sql, counted_ids) = prisma.db.query_raw.call_args.args
-    assert "j.stopped_at IS NULL OR a.created_at <= j.stopped_at" in counts_sql
-    assert counted_ids == ["job-exhausted", "job-swept", "job-cut-short", "job-sampling"]
+    (_, counted_ids) = prisma.db.query_raw.call_args.args
+    assert counted_ids == ["job-exhausted", "job-swept", "job-cut-short", "job-operator-stopped", "job-sampling"]
 
 
 @pytest.mark.asyncio
@@ -907,7 +914,8 @@ async def test_stop_shadow_eval_sets_stopped_at_and_rejects_non_running(monkeypa
     stopped = await stop_shadow_eval_job("job-1", ADMIN)
     assert stopped.status == "stopped"
     update = prisma.db.litellm_shadowevaljob.update.call_args.kwargs
-    assert set(update["data"]) == {"stopped_at"}
+    assert set(update["data"]) == {"stopped_at", "stopped_by"}
+    assert update["data"]["stopped_by"] == "admin"
 
     prisma.db.litellm_shadowevaljob.find_unique = AsyncMock(
         return_value=_job_record(ends_at=datetime.now(timezone.utc) - timedelta(days=1))

@@ -1470,8 +1470,8 @@ model LiteLLM_AutoRouterSession {
 // through it, answering whether the key should adopt it; reverse duplicates the requests
 // the router did serve against a fixed baseline model, answering whether a key already on
 // it still benefits. Either way a sampled slice runs in a detached task and an LLM judge
-// compares real vs shadow responses blind. The job row is immutable config plus
-// stopped_at; every count, status, and spend figure is derived from the append-only
+// compares real vs shadow responses blind. The job row is immutable config plus the
+// stopped_at/stopped_by stop record; every count, status, and spend figure is derived from the append-only
 // attempt rows, so nothing can disagree across pods or stop races.
 model LiteLLM_ShadowEvalJob {
   id                String   @id @default(cuid())
@@ -1486,6 +1486,7 @@ model LiteLLM_ShadowEvalJob {
   created_by        String?
   ends_at           DateTime
   stopped_at        DateTime?
+  stopped_by        String?  // operator who stopped it early; null when it ended on its own
 
   @@index([api_key_id])
   @@index([created_at])
