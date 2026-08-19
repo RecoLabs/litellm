@@ -132,21 +132,27 @@ async def _resync_model_deployments(model_name: str) -> bool:
 async def _resync_guardrails(guardrail_name: str) -> bool:
     from litellm.proxy import proxy_server
     from litellm.proxy.guardrails.guardrail_registry import (
+        GUARDRAIL_RECONCILE_LOCK,
         IN_MEMORY_GUARDRAIL_HANDLER,
         GuardrailRegistry,
     )
 
     if not _db_backed_registries_enabled("guardrails"):
         return False
+    if _initialized_guardrail(guardrail_name) is not None:
+        return True
     prisma_client: Final = proxy_server.prisma_client
     assert prisma_client is not None
-    row: Final = await GuardrailRegistry().get_guardrail_by_name_from_db(
-        guardrail_name=guardrail_name, prisma_client=prisma_client
-    )
-    if row is None:
-        return False
-    IN_MEMORY_GUARDRAIL_HANDLER.sync_guardrail_from_db(guardrail=row)
-    return _initialized_guardrail(guardrail_name) is not None
+    async with GUARDRAIL_RECONCILE_LOCK:
+        if _initialized_guardrail(guardrail_name) is not None:
+            return True
+        row: Final = await GuardrailRegistry().get_guardrail_by_name_from_db(
+            guardrail_name=guardrail_name, prisma_client=prisma_client
+        )
+        if row is None:
+            return False
+        IN_MEMORY_GUARDRAIL_HANDLER.sync_guardrail_from_db(guardrail=row)
+        return _initialized_guardrail(guardrail_name) is not None
 
 
 async def _resync_agents(agent_id_or_name: str) -> bool:

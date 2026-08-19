@@ -422,3 +422,37 @@ async def test_resync_agents_waits_for_agent_reload_and_skips_duplicate_registra
 
     assert await resync_task is True
     assert len(clean_agent_registry.agent_list) == 1
+
+
+@pytest.mark.asyncio
+async def test_resync_guardrails_waits_for_guardrail_reload_and_skips_duplicate_sync(monkeypatch):
+    from unittest.mock import AsyncMock, MagicMock
+
+    import litellm.proxy.proxy_server as proxy_server
+    from litellm.proxy.common_utils.registry_read_through import _resync_guardrails
+    from litellm.proxy.guardrails.guardrail_registry import (
+        GUARDRAIL_RECONCILE_LOCK,
+        IN_MEMORY_GUARDRAIL_HANDLER,
+    )
+
+    guardrail_id: Final = "reload-race-guardrail-id"
+    guardrail_name: Final = "reload-race-guardrail"
+    prisma_client: Final = MagicMock()
+    prisma_client.db.litellm_guardrailstable.find_unique = AsyncMock(
+        side_effect=AssertionError("db hit while the guardrail reload held the reconcile lock")
+    )
+    monkeypatch.setattr(proxy_server, "prisma_client", prisma_client)
+    monkeypatch.setattr(proxy_server, "store_model_in_db", True)
+
+    try:
+        async with GUARDRAIL_RECONCILE_LOCK:
+            resync_task: Final = asyncio.ensure_future(_resync_guardrails(guardrail_name))
+            await asyncio.sleep(0.05)
+            assert not resync_task.done()
+            IN_MEMORY_GUARDRAIL_HANDLER.sync_guardrail_from_db(
+                guardrail=dict(FakeGuardrailRow(guardrail_id, guardrail_name))
+            )
+
+        assert await resync_task is True
+    finally:
+        IN_MEMORY_GUARDRAIL_HANDLER.delete_in_memory_guardrail(guardrail_id)
