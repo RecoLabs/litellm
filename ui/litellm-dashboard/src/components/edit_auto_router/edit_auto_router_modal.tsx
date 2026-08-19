@@ -30,6 +30,7 @@ import {
   customTierSetWireFields,
   KEYS_REJECTED_WITH_CUSTOM_TIERS,
   hydrateCustomTierSet,
+  hydratePlanModeMinTier,
   hydrateTierLabels,
   normalizeClassifierLlmConfig,
   serializeTierLabels,
@@ -197,7 +198,7 @@ export const buildUpdatedComplexityRouterConfig = (
           match_threshold: keywordMatching.matchThreshold,
         }),
       }),
-      ...customTierSetWireFields(value.custom_tier_set, value.classifier_llm_config),
+      ...customTierSetWireFields(value.custom_tier_set, value.classifier_llm_config, value.plan_mode_min_tier),
     };
   }
 
@@ -404,10 +405,7 @@ const EditAutoRouterModal: React.FC<EditAutoRouterModalProps> = ({
             hydratedTiers,
             hydratedCustomTierSet,
           ),
-          plan_mode_min_tier:
-            typeof parsedConfig.plan_mode_min_tier === "string" && parsedConfig.plan_mode_min_tier.trim() !== ""
-              ? parsedConfig.plan_mode_min_tier
-              : undefined,
+          plan_mode_min_tier: hydratePlanModeMinTier(parsedConfig.plan_mode_min_tier, hydratedCustomTierSet),
           tier_labels: hydrateTierLabels(parsedConfig.tier_labels),
           classifier_type: parsedConfig.classifier_type || "heuristic",
           classifier_llm_config: parsedConfig.classifier_llm_config,

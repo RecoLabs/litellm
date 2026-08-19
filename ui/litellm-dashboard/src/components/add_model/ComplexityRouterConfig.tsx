@@ -109,7 +109,7 @@ export type AdaptiveEligible = "all" | "classified_tier";
 export type ComplexityTierLabels = Partial<Record<keyof ComplexityTiers, string>>;
 
 export interface TierDraft {
-  /** List identity: the React key and the fallback pointer's target. Never serialized. */
+  /** List identity: the React key and the fallback and plan-mode pointers' target. Never serialized. */
   id: string;
   name: string;
   /** The tier's rubric bullet. Blank on a built-in name inherits the built-in criteria. */
@@ -158,7 +158,12 @@ export interface ComplexityRouterConfigValue {
   classifier_fallback?: ClassifierFallback;
   session_affinity?: boolean;
   deployment_affinity?: boolean;
-  /** Tier floor for coding-agent plan-mode requests. Unset means detection is off, matching the backend. */
+  /**
+   * Tier floor for coding-agent plan-mode requests, held as a tier ROW ID so renames follow
+   * (built-in row ids are the four tier names, so built-in mode is id-stable by construction).
+   * Serialization resolves the id to the row's name; unset means detection is off, matching the
+   * backend.
+   */
   plan_mode_min_tier?: string;
   adaptive?: boolean;
   adaptive_weights?: AdaptiveRouterWeights;
@@ -226,10 +231,13 @@ export const TIER_KEYS = Object.keys(TIER_DESCRIPTIONS) as Array<keyof Complexit
 export const effectiveTierLabel = (tier: keyof ComplexityTiers, tierLabels: ComplexityTierLabels | undefined): string =>
   tierLabels?.[tier]?.trim() || TIER_DESCRIPTIONS[tier].label;
 
-/** Tiers the plan-mode floor may name: the backend rejects a floor whose tier has no models. */
+/**
+ * Row IDS the plan-mode floor may point at (the backend rejects a floor whose tier has no models).
+ * Ids, not names: a rename must not strand the floor, same rule as fallback_tier_id.
+ */
 export const planModeEligibleTiers = (tiers: ComplexityTiers, customTierSet?: CustomTierSet): string[] =>
   customTierSet
-    ? customTierSet.tiers.filter((row) => row.name.trim() && row.models.length > 0).map((row) => row.name.trim())
+    ? customTierSet.tiers.filter((row) => row.name.trim() && row.models.length > 0).map((row) => row.id)
     : TIER_KEYS.filter((tier) => (tiers[tier] ?? []).length > 0);
 
 const ComplexityRouterConfig: React.FC<ComplexityRouterConfigProps> = ({
@@ -332,9 +340,9 @@ const ComplexityRouterConfig: React.FC<ComplexityRouterConfigProps> = ({
   const addCustomTier = () => {
     const [rows, fallbackId] = currentRows();
     const taken = new Set(rows.map((row) => row.id));
-    const id = Array.from({ length: rows.length + 1 }, (_, n) => `new-${n + 1}`).find(
-      (candidate) => !taken.has(candidate),
-    ) as string;
+    const id =
+      Array.from({ length: rows.length + 1 }, (_, n) => `new-${n + 1}`).find((candidate) => !taken.has(candidate)) ??
+      `new-${rows.length + 1}`;
     applyTierRows([...rows, { id, name: "", definition: "", models: [] }], fallbackId);
   };
 
@@ -750,10 +758,13 @@ const ComplexityRouterConfig: React.FC<ComplexityRouterConfigProps> = ({
                       aria-label="Plan-mode minimum tier"
                       style={{ width: "100%" }}
                       value={value.plan_mode_min_tier}
-                      options={tierOptions(
-                        customTierSet ? undefined : value.tier_labels,
-                        customTierSet ? planModeTiers : undefined,
-                      ).filter((option) => planModeTiers.includes(option.value))}
+                      options={
+                        customTierSet
+                          ? customTierSet.tiers
+                              .filter((row) => planModeTiers.includes(row.id))
+                              .map((row) => ({ value: row.id, label: row.name.trim() }))
+                          : tierOptions(value.tier_labels).filter((option) => planModeTiers.includes(option.value))
+                      }
                       onChange={(tier: string) => onChange({ ...value, plan_mode_min_tier: tier })}
                     />
                   </div>

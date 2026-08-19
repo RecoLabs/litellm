@@ -424,3 +424,59 @@ describe("buildUpdatedComplexityRouterConfig custom tier sets", () => {
     expect(result).not.toHaveProperty("fallback_tier");
   });
 });
+
+describe("buildUpdatedComplexityRouterConfig custom tier set plan-mode floor", () => {
+  const customValue = {
+    tiers: { SIMPLE: ["gpt-4o-mini"], MEDIUM: ["gpt-4o"], COMPLEX: ["claude-sonnet-4"], REASONING: ["o1-preview"] },
+    custom_tier_set: {
+      tiers: [
+        { id: "SIMPLE", name: "SIMPLE", definition: "", models: ["gpt-4o-mini"] },
+        { id: "COMPLEX", name: "COMPLEX", definition: "", models: ["claude-sonnet-4"] },
+        { id: "sec", name: "AUDIT", definition: "security audits", models: ["claude-sonnet-5"] },
+      ],
+      fallback_tier_id: "COMPLEX",
+    },
+    classifier_type: "llm" as const,
+    classifier_llm_config: { model: "haiku-classifier", timeout_ms: 400 },
+  };
+
+  it("round-trips a stored floor on a custom tier save instead of silently clearing it", () => {
+    const result = buildUpdatedComplexityRouterConfig(
+      { ...STORED, plan_mode_min_tier: "AUDIT" },
+      { ...customValue, plan_mode_min_tier: "sec" },
+      undefined,
+      hydratedState,
+    );
+    expect(result.plan_mode_min_tier).toBe("AUDIT");
+  });
+
+  it("follows a rename of the floor's tier, because the floor points at the row id", () => {
+    const renamed = {
+      ...customValue,
+      custom_tier_set: {
+        ...customValue.custom_tier_set,
+        tiers: customValue.custom_tier_set.tiers.map((row) =>
+          row.id === "sec" ? { ...row, name: "SECURITY_REVIEW" } : row,
+        ),
+      },
+      plan_mode_min_tier: "sec",
+    };
+    const result = buildUpdatedComplexityRouterConfig(
+      { ...STORED, plan_mode_min_tier: "AUDIT" },
+      renamed,
+      undefined,
+      hydratedState,
+    );
+    expect(result.plan_mode_min_tier).toBe("SECURITY_REVIEW");
+  });
+
+  it("emits no floor when its row left the tier set, rather than a stale name", () => {
+    const result = buildUpdatedComplexityRouterConfig(
+      { ...STORED, plan_mode_min_tier: "AUDIT" },
+      { ...customValue, plan_mode_min_tier: "gone" },
+      undefined,
+      hydratedState,
+    );
+    expect(result).not.toHaveProperty("plan_mode_min_tier");
+  });
+});

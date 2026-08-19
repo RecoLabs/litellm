@@ -4,6 +4,7 @@ import {
   getCustomTierSetError,
   getKeywordRuleTierError,
   hydrateCustomTierSet,
+  hydratePlanModeMinTier,
   normalizeClassifierLlmConfig,
   serializeCustomTierSet,
   getKeywordTierRulesError,
@@ -809,5 +810,40 @@ describe("custom tier sets", () => {
     it("returns undefined for a built-in router config", () => {
       expect(hydrateCustomTierSet({ tiers: { SIMPLE: ["cheap"] } })).toBeUndefined();
     });
+  });
+});
+
+describe("plan-mode floor on a custom tier set", () => {
+  const rows = [
+    { id: "SIMPLE", name: "SIMPLE", definition: "", models: ["gpt-4o-mini"] },
+    { id: "sec", name: "SECURITY_REVIEW", definition: "security audits", models: ["claude-sonnet-5"] },
+    { id: "new-1", name: "DRAFTING", definition: "long-form writing", models: [] },
+  ];
+  const set = { tiers: rows, fallback_tier_id: "SIMPLE" };
+  const params = { ...baseParams, customTierSet: set, classifierType: "llm" as const };
+
+  it("resolves the floor's row id to the tier NAME on the wire", () => {
+    const config = buildComplexityRouterConfig({ ...params, planModeMinTier: "sec" });
+    expect(config.plan_mode_min_tier).toBe("SECURITY_REVIEW");
+  });
+
+  it("emits no floor when the id matches no row", () => {
+    const config = buildComplexityRouterConfig({ ...params, planModeMinTier: "gone" });
+    expect(config).not.toHaveProperty("plan_mode_min_tier");
+  });
+
+  it("getPlanModeTierError looks the floor up by row id and reports the row's NAME", () => {
+    const builtInTiers = { SIMPLE: ["m"], MEDIUM: [], COMPLEX: [], REASONING: [] };
+    expect(getPlanModeTierError("sec", builtInTiers, set)).toBeNull();
+    expect(getPlanModeTierError("new-1", builtInTiers, set)).toContain("DRAFTING");
+    expect(getPlanModeTierError("gone", builtInTiers, set)).toContain("not in the tier set");
+  });
+
+  it("hydration maps the stored NAME back to the row id, and keeps an unmatched name raw", () => {
+    expect(hydratePlanModeMinTier("SECURITY_REVIEW", set)).toBe("sec");
+    expect(hydratePlanModeMinTier("NOT_A_TIER", set)).toBe("NOT_A_TIER");
+    expect(hydratePlanModeMinTier("COMPLEX", undefined)).toBe("COMPLEX");
+    expect(hydratePlanModeMinTier("  ", set)).toBeUndefined();
+    expect(hydratePlanModeMinTier(7, set)).toBeUndefined();
   });
 });

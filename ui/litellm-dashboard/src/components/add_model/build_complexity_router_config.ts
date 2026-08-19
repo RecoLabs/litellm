@@ -196,11 +196,12 @@ export const getPlanModeTierError = (
 ): string | null => {
   if (!planModeMinTier) return null;
   if (customTierSet) {
-    const row = customTierSet.tiers.find((tier) => tier.name.trim() === planModeMinTier);
+    const row = customTierSet.tiers.find((tier) => tier.id === planModeMinTier);
+    const shownName = row?.name.trim() || planModeMinTier;
     if (!row)
-      return `The plan-mode minimum tier (${planModeMinTier}) is not in the tier set. Re-pick or turn the override off.`;
+      return `The plan-mode minimum tier (${shownName}) is not in the tier set. Re-pick or turn the override off.`;
     if (row.models.length > 0) return null;
-    return `The plan-mode minimum tier (${planModeMinTier}) has no models. Add one or turn the override off.`;
+    return `The plan-mode minimum tier (${shownName}) has no models. Add one or turn the override off.`;
   }
   const models = tiers[planModeMinTier as keyof ComplexityTiers] ?? [];
   if (models.length > 0) return null;
@@ -318,18 +319,38 @@ export const KEYS_REJECTED_WITH_CUSTOM_TIERS: readonly string[] = [
 export const customTierSetWireFields = (
   customTierSet: CustomTierSet,
   classifierLlmConfig: ClassifierLLMConfig | undefined,
-) => ({
-  ...serializeCustomTierSet(customTierSet),
-  classifier_type: "llm" as const,
-  ...(classifierLlmConfig && {
-    classifier_llm_config: {
-      model: classifierLlmConfig.model,
-      timeout_ms: classifierLlmConfig.timeout_ms,
-    },
-  }),
-  session_affinity: false,
-  escalation_keywords: [] as string[],
-});
+  planModeMinTierId: string | undefined,
+) => {
+  const planModeName = customTierSet.tiers.find((row) => row.id === planModeMinTierId)?.name.trim();
+  return {
+    ...serializeCustomTierSet(customTierSet),
+    classifier_type: "llm" as const,
+    ...(classifierLlmConfig && {
+      classifier_llm_config: {
+        model: classifierLlmConfig.model,
+        timeout_ms: classifierLlmConfig.timeout_ms,
+      },
+    }),
+    session_affinity: false,
+    escalation_keywords: [] as string[],
+    ...(planModeName && { plan_mode_min_tier: planModeName }),
+  };
+};
+
+/**
+ * On the form value, plan_mode_min_tier holds a tier ROW ID (built-in row ids are the four tier
+ * names, so built-in configs are id-stable by construction). The wire carries the NAME, so
+ * hydration maps it back to the row minted for that name; an unmatched name is kept raw so
+ * getPlanModeTierError blocks the save with the stored name in the message.
+ */
+export const hydratePlanModeMinTier = (
+  stored: unknown,
+  customTierSet: CustomTierSet | undefined,
+): string | undefined => {
+  if (typeof stored !== "string" || stored.trim() === "") return undefined;
+  if (!customTierSet) return stored;
+  return customTierSet.tiers.find((row) => row.name.trim() === stored.trim())?.id ?? stored;
+};
 
 const applyCustomTierSetInvariants = (
   payload: ComplexityRouterConfigPayload,
@@ -346,11 +367,12 @@ const applyCustomTierSetInvariants = (
     tier_boundaries: _tierBoundaries,
     token_thresholds: _tokenThresholds,
     dimension_weights: _dimensionWeights,
+    plan_mode_min_tier: planModeMinTierId,
     ...rest
   } = payload;
   return {
     ...rest,
-    ...customTierSetWireFields(customTierSet, classifierLlmConfig),
+    ...customTierSetWireFields(customTierSet, classifierLlmConfig, planModeMinTierId),
   };
 };
 

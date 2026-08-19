@@ -2393,7 +2393,9 @@ export const validateAutoRouterConfig = async (
       accessToken,
       body: { complexity_router_config: complexityRouterConfig },
     });
-  } catch {
+  } catch (error) {
+    // Fail open: a transport failure must not block a save the write gate would accept.
+    console.warn("auto_router/validate_config unreachable, deferring to the write gate", error);
     return { valid: true, error: null };
   }
 };
