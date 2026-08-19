@@ -441,6 +441,11 @@ async def route_request(
         requested_model: Final = data.get("model", "")
         if not isinstance(requested_model, str) or not requested_model:
             raise
+        # A2A routing already runs its own agent read-through; retrying against the
+        # model registry would burn its budget on `a2a/<name>` keys and can fail-closed
+        # a sibling-created model for the rest of the window.
+        if _is_a2a_agent_model(requested_model):
+            raise
         from litellm.proxy import proxy_server
         from litellm.proxy.common_utils.registry_read_through import (
             model_registry_read_through,
