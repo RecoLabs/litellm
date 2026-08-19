@@ -12,7 +12,8 @@ export type ComplexityTier = "SIMPLE" | "MEDIUM" | "COMPLEX" | "REASONING";
 export interface KeywordTierRule {
   id: string;
   keywords: string[];
-  tier: ComplexityTier;
+  /** A built-in tier name, or with a custom tier set, one of the defined tier names. */
+  tier: string;
 }
 
 interface KeywordTierRulesProps {
@@ -124,7 +125,7 @@ const KeywordTierRules: React.FC<KeywordTierRulesProps> = ({ rules, onChange, ti
                   </Text>
                   <AntdSelect
                     value={rule.tier}
-                    onChange={(tier: ComplexityTier) => updateRule(rule.id, { tier })}
+                    onChange={(tier: string) => updateRule(rule.id, { tier })}
                     options={tierOptions(tierLabels)}
                     style={{ width: "100%" }}
                   />
