@@ -893,6 +893,8 @@ export interface paths {
         /**
          * Stop Shadow Eval Job
          * @description Stop an active shadow eval job. Attempts are kept; sampling halts within ~10s.
+         *     One statement records the stop and releases the key's slot together, so a
+         *     half-applied stop can never read stopped while sampling continues.
          */
         post: operations["stop_shadow_eval_job_auto_router_shadow_eval__job_id__stop_post"];
         delete?: never;
@@ -33270,15 +33272,21 @@ export interface components {
             shadow_percentage: number;
             /**
              * Status
-             * @description Three recorded facts, no history-guessing: a stop is stopped_by (the migration
-             *     backfills it for every job that displayed stopped when the column arrived, so the
-             *     pre-column population is closed), completion is the window passing or the attempt
-             *     budget being spent, and anything else is running. The bare stopped_at fallback
-             *     covers only stops written by pre-column pods during a rolling deploy.
+             * @description Recorded facts only, no history-guessing. stopped_at now means exactly one
+             *     thing, a stop: the sweep frees slots via the internal released_at column and
+             *     never touches it, so ANY stamp, even one an actor-less pre-column pod wrote
+             *     mid-deploy, reads stopped and no attempt arithmetic can reclassify it.
+             *     Completion is the window passing or the attempt budget being spent; counts are
+             *     only ever consulted for unstamped jobs. A stamped job whose window has passed
+             *     without a recorded actor predates the column and keeps its old completed
+             *     reading; the migration backfills stopped_by for the rest.
              * @enum {string}
              */
             readonly status: "running" | "completed" | "stopped";
-            /** Stopped At */
+            /**
+             * Stopped At
+             * @description When an operator stopped the job; None when it ended on its own. Budget and window completion never write it: slot bookkeeping lives in an internal column instead
+             */
             stopped_at?: string | null;
             /**
              * Stopped By

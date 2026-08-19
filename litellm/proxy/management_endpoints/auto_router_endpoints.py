@@ -529,20 +529,25 @@ _ATTEMPT_AGG_BY_TIER_SQL: Final = "SELECT COALESCE(tier, 'UNCLASSIFIED') AS grp,
 _ATTEMPT_AGG_BY_MODEL_SQL: Final = "SELECT COALESCE(real_model, 'unknown') AS grp," + _ATTEMPT_AGG_SELECT
 
 _SWEEP_FINISHED_JOBS_SQL: Final = """
-UPDATE "LiteLLM_ShadowEvalJob" j SET stopped_at = (NOW() AT TIME ZONE 'utc')
-WHERE j.api_key_id = $1 AND j.stopped_at IS NULL
+UPDATE "LiteLLM_ShadowEvalJob" j SET released_at = (NOW() AT TIME ZONE 'utc')
+WHERE j.api_key_id = $1 AND j.released_at IS NULL
   AND (
     j.ends_at <= (NOW() AT TIME ZONE 'utc')
     OR (SELECT COUNT(*) FROM "LiteLLM_ShadowEvalAttempt" a WHERE a.job_id = j.id) >= j.max_turns
   )
 """
 
+_STOP_JOB_SQL: Final = """
+UPDATE "LiteLLM_ShadowEvalJob"
+SET stopped_at = $2::timestamp, stopped_by = $3, released_at = COALESCE(released_at, $2::timestamp)
+WHERE id = $1
+"""
+
 _ATTEMPT_COUNTS_SQL: Final = """
-SELECT a.job_id, COUNT(*)::int AS attempt_count
-FROM "LiteLLM_ShadowEvalAttempt" a
-JOIN "LiteLLM_ShadowEvalJob" j ON j.id = a.job_id
-WHERE a.job_id = ANY($1::text[]) AND (j.stopped_at IS NULL OR a.created_at <= j.stopped_at)
-GROUP BY a.job_id
+SELECT job_id, COUNT(*)::int AS attempt_count
+FROM "LiteLLM_ShadowEvalAttempt"
+WHERE job_id = ANY($1::text[])
+GROUP BY job_id
 """
 
 
@@ -620,11 +625,10 @@ async def _with_key_labels(
 async def _with_attempt_counts(
     prisma_client: "PrismaClient", responses: Sequence[ShadowEvalJobResponse]
 ) -> tuple[ShadowEvalJobResponse, ...]:
-    """Attach each job's attempt count, judged and errored alike, in one grouped read.
-    It is the same count the sampler budgets against max_turns, so the derived status
-    flips to completed exactly when sampling actually ends. A stamped job's count
-    freezes at its stopped_at: in-flight attempts landing after the stamp are excluded,
-    so a stop written without stopped_by by a pre-column pod stays stopped."""
+    """Attach each job's total attempt count, judged and errored alike, in one grouped
+    read. It is the same count the sampler budgets against max_turns, so the derived
+    status flips to completed exactly when sampling actually ends. Counts never decide
+    stopped-ness: any recorded stop outranks them in the derivation."""
     if not responses:
         return ()
     rows: Final = _ATTEMPT_COUNT_ROWS.validate_python(
@@ -723,7 +727,7 @@ async def start_shadow_eval(
         where={  # mutable-ok: Prisma filter
             "api_key_id": data.api_key_id,
             "direction": data.direction,
-            "stopped_at": None,
+            "released_at": None,
         },
     )
     if active is not None:
@@ -845,7 +849,9 @@ async def stop_shadow_eval_job(
     job_id: str,
     user_api_key_dict: Annotated[UserAPIKeyAuth, Depends(user_api_key_auth)],
 ) -> ShadowEvalJobResponse:
-    """Stop an active shadow eval job. Attempts are kept; sampling halts within ~10s."""
+    """Stop an active shadow eval job. Attempts are kept; sampling halts within ~10s.
+    One statement records the stop and releases the key's slot together, so a
+    half-applied stop can never read stopped while sampling continues."""
     from litellm.proxy.proxy_server import prisma_client
 
     _require_admin_writer(user_api_key_dict, "stop a shadow eval")
@@ -862,14 +868,13 @@ async def stop_shadow_eval_job(
     current: Final = counted[0]
     if current.status != "running":
         raise HTTPException(status_code=400, detail=f"Job {job_id} is already {current.status}")
-    updated: Final = await prisma_client.db.litellm_shadowevaljob.update(
-        where={"id": job_id},  # mutable-ok: Prisma filter
-        data={  # mutable-ok: Prisma payload
-            "stopped_at": datetime.now(timezone.utc),
-            "stopped_by": user_api_key_dict.user_id or "operator",
-        },
-    )
+    stamp: Final = datetime.now(timezone.utc)
+    operator: Final = user_api_key_dict.user_id or "operator"
+    await prisma_client.db.execute_raw(_STOP_JOB_SQL, job_id, stamp.replace(tzinfo=None).isoformat(), operator)
     labeled: Final = await _with_key_labels(
-        prisma_client, (ShadowEvalJobResponse.model_validate(updated, from_attributes=True),)
+        prisma_client,
+        (
+            current.model_copy(update={"stopped_at": stamp, "stopped_by": operator}),
+        ),  # mutable-ok: pydantic update payload
     )
     return labeled[0]
