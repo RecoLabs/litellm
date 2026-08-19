@@ -871,10 +871,6 @@ async def stop_shadow_eval_job(
     stamp: Final = datetime.now(timezone.utc)
     operator: Final = user_api_key_dict.user_id or "operator"
     await prisma_client.db.execute_raw(_STOP_JOB_SQL, job_id, stamp.replace(tzinfo=None).isoformat(), operator)
-    labeled: Final = await _with_key_labels(
-        prisma_client,
-        (
-            current.model_copy(update={"stopped_at": stamp, "stopped_by": operator}),
-        ),  # mutable-ok: pydantic update payload
-    )
+    update: Final = {"stopped_at": stamp, "stopped_by": operator}  # mutable-ok: pydantic update payload
+    labeled: Final = await _with_key_labels(prisma_client, (current.model_copy(update=update),))
     return labeled[0]
