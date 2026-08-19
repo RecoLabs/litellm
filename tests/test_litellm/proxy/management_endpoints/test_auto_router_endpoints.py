@@ -4,6 +4,7 @@ Unit tests for auto router management endpoints
 
 import os
 import sys
+from pathlib import Path
 
 import pytest
 from fastapi import HTTPException
@@ -325,9 +326,7 @@ class TestAutoRouterBenchmarks:
         from litellm.proxy.management_endpoints.auto_router_endpoints import _benchmark_totals
 
         totals = _benchmark_totals(self.ROW)
-        bucket_hits = (
-            totals.cache.same_model.hits + totals.cache.first_visit.hits + totals.cache.return_to_tier.hits
-        )
+        bucket_hits = totals.cache.same_model.hits + totals.cache.first_visit.hits + totals.cache.return_to_tier.hits
         assert bucket_hits == 27
         assert totals.cache.hit_rate_pct == pytest.approx(100.0 * 28 / 38, abs=0.1)
 
@@ -751,9 +750,7 @@ async def test_get_shadow_eval_job_derives_counts_spend_and_stratified_results(m
     prisma = _shadow_prisma(agg_rows=tier_rows)
     prisma.attempt_rows = [{"job_id": "job-1", "attempt_count": 12}]
     prisma.db.litellm_shadowevaljob.find_unique = AsyncMock(return_value=_job_record())
-    prisma.db.litellm_shadowevalattempt.find_first = AsyncMock(
-        return_value=MagicMock(error="judge call failed: boom")
-    )
+    prisma.db.litellm_shadowevalattempt.find_first = AsyncMock(return_value=MagicMock(error="judge call failed: boom"))
     monkeypatch.setattr(proxy_server, "prisma_client", prisma)
 
     response = await get_shadow_eval_job("job-1", VIEWER)
@@ -901,6 +898,40 @@ async def test_shadow_eval_responses_name_the_shadowed_key(monkeypatch: pytest.M
     prisma.db.litellm_shadowevaljob.find_unique = AsyncMock(return_value=_job_record())
     detail = await get_shadow_eval_job("job-1", VIEWER)
     assert detail.key_alias == "prod-alpha"
+
+
+@pytest.mark.asyncio
+async def test_backfilled_legacy_stop_never_reads_as_completion(monkeypatch: pytest.MonkeyPatch):
+    """Jobs stopped before stopped_by existed are backfilled with 'unknown' by the
+    migration, so even one whose stray attempts crossed the budget stays stopped."""
+    import litellm.proxy.proxy_server as proxy_server
+
+    prisma = _shadow_prisma()
+    prisma.db.litellm_shadowevaljob.find_many = AsyncMock(
+        return_value=[_job_record(max_turns=5, stopped_at=datetime.now(timezone.utc), stopped_by="unknown")]
+    )
+    prisma.attempt_rows = [{"job_id": "job-1", "attempt_count": 6}]
+    monkeypatch.setattr(proxy_server, "prisma_client", prisma)
+
+    jobs = await list_shadow_eval_jobs(VIEWER, api_key_id=None, limit=50)
+    assert jobs[0].status == "stopped"
+    assert jobs[0].stopped_by == "unknown"
+
+
+def test_stopped_by_migration_backfills_every_job_that_displayed_stopped():
+    """The migration must close the pre-column population: without the backfill, a
+    legacy stop whose stray attempts crossed the budget would read completed."""
+    import litellm_proxy_extras
+
+    sql = (
+        Path(litellm_proxy_extras.__file__).parent
+        / "migrations"
+        / "20260818224500_add_shadow_eval_stopped_by"
+        / "migration.sql"
+    ).read_text()
+    assert 'ADD COLUMN     "stopped_by" TEXT' in sql
+    assert "SET stopped_by = 'unknown'" in sql
+    assert "WHERE stopped_at IS NOT NULL AND ends_at > (NOW() AT TIME ZONE 'utc')" in sql
 
 
 @pytest.mark.asyncio

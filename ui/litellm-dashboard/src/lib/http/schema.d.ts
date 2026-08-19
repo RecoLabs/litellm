@@ -33270,11 +33270,11 @@ export interface components {
             shadow_percentage: number;
             /**
              * Status
-             * @description An operator's stop is a recorded fact, not an inference: a job with stopped_by
-             *     reads stopped permanently, and no attempt landing around the stop can reclassify
-             *     it as completed. A job without one reads completed once its window passes or its
-             *     attempt budget is spent, whether or not a sweep stamped stopped_at yet; bare
-             *     stopped_at covers rows stamped before stopped_by existed.
+             * @description Three recorded facts, no history-guessing: a stop is stopped_by (the migration
+             *     backfills it for every job that displayed stopped when the column arrived, so the
+             *     pre-column population is closed), completion is the window passing or the attempt
+             *     budget being spent, and anything else is running. The bare stopped_at fallback
+             *     covers only stops written by pre-column pods during a rolling deploy.
              * @enum {string}
              */
             readonly status: "running" | "completed" | "stopped";
@@ -33282,7 +33282,7 @@ export interface components {
             stopped_at?: string | null;
             /**
              * Stopped By
-             * @description The operator who stopped the job early, recorded by the stop endpoint; None when the job ended on its own. Its presence is what makes a job read stopped rather than completed
+             * @description The operator who stopped the job early, recorded by the stop endpoint; 'unknown' backfilled by migration for jobs that displayed stopped when the column arrived; None when the job ended on its own. Its presence is what makes a job read stopped rather than completed
              */
             stopped_by?: string | null;
         };

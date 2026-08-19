@@ -538,10 +538,11 @@ WHERE j.api_key_id = $1 AND j.stopped_at IS NULL
 """
 
 _ATTEMPT_COUNTS_SQL: Final = """
-SELECT job_id, COUNT(*)::int AS attempt_count
-FROM "LiteLLM_ShadowEvalAttempt"
-WHERE job_id = ANY($1::text[])
-GROUP BY job_id
+SELECT a.job_id, COUNT(*)::int AS attempt_count
+FROM "LiteLLM_ShadowEvalAttempt" a
+JOIN "LiteLLM_ShadowEvalJob" j ON j.id = a.job_id
+WHERE a.job_id = ANY($1::text[]) AND (j.stopped_at IS NULL OR a.created_at <= j.stopped_at)
+GROUP BY a.job_id
 """
 
 
@@ -619,10 +620,11 @@ async def _with_key_labels(
 async def _with_attempt_counts(
     prisma_client: "PrismaClient", responses: Sequence[ShadowEvalJobResponse]
 ) -> tuple[ShadowEvalJobResponse, ...]:
-    """Attach each job's total attempt count, judged and errored alike, in one grouped
-    read. It is the same count the sampler budgets against max_turns, so the derived
-    status flips to completed exactly when sampling actually ends; an operator's stop
-    outranks it via stopped_by, so it never reclassifies a stopped job."""
+    """Attach each job's attempt count, judged and errored alike, in one grouped read.
+    It is the same count the sampler budgets against max_turns, so the derived status
+    flips to completed exactly when sampling actually ends. A stamped job's count
+    freezes at its stopped_at: in-flight attempts landing after the stamp are excluded,
+    so a stop written without stopped_by by a pre-column pod stays stopped."""
     if not responses:
         return ()
     rows: Final = _ATTEMPT_COUNT_ROWS.validate_python(
