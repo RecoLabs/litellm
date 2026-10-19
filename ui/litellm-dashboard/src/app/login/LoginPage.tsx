@@ -3,9 +3,16 @@
 import { useLogin } from "@/app/(dashboard)/hooks/login/useLogin";
 import { useUIConfig } from "@/app/(dashboard)/hooks/uiConfig/useUIConfig";
 import LoadingScreen from "@/components/common_components/LoadingScreen";
-import { exchangeLoginCode, getProxyBaseUrl, switchToWorkerUrl } from "@/components/networking";
+import {
+  exchangeLoginCode,
+  getProxyBaseUrl,
+  getRuntimeBackendBaseUrl,
+  getUiPageUrl,
+  switchToWorkerUrl,
+} from "@/components/networking";
+import { Alert, AlertAction, AlertDescription, AlertTitle } from "@/components/shared/Alert";
 import { PasswordInput } from "@/components/shared/PasswordInput";
-import { Field, FieldGroup, FieldLabel } from "@/components/shared/form/field";
+import { Field, FieldGroup, FieldLabel } from "@/components/ui/field";
 import { FormField } from "@/components/shared/form/FormField";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -17,11 +24,10 @@ import { useZodForm } from "@/lib/forms/useZodForm";
 import { clearTokenCookies, getCookieFromDocument } from "@/utils/cookieUtils";
 import { isJwtExpired } from "@/utils/jwtUtils";
 import { consumeReturnUrl, getLoginUrl, getReturnUrl, isValidReturnUrl } from "@/utils/returnUrlUtils";
-import { InfoCircleOutlined } from "@ant-design/icons";
-import { Alert } from "antd";
+import { CircleAlert, Info, TriangleAlert, X } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useEffect, useId, useState } from "react";
-import { z } from "zod/v4";
+import { z } from "zod";
 import { useWorker } from "@/hooks/useWorker";
 
 const loginSchema = z.object({
@@ -30,6 +36,31 @@ const loginSchema = z.object({
 });
 
 type LoginFormValues = z.infer<typeof loginSchema>;
+
+function SsoEnabledNotice() {
+  const [dismissed, setDismissed] = useState(false);
+
+  if (dismissed) {
+    return null;
+  }
+
+  return (
+    <Alert variant="info" className="mt-4">
+      <Info />
+      <AlertTitle>
+        Single Sign-On (SSO) is enabled. LiteLLM no longer automatically redirects to the SSO login flow upon loading
+        this page. To re-enable auto-redirect-to-SSO, set{" "}
+        <code className="bg-muted px-1 py-0.5 rounded-sm text-xs">AUTO_REDIRECT_UI_LOGIN_TO_SSO=true</code> in your
+        environment configuration.
+      </AlertTitle>
+      <AlertAction>
+        <Button variant="ghost" size="icon-sm" aria-label="Close" onClick={() => setDismissed(true)}>
+          <X className="size-4" />
+        </Button>
+      </AlertAction>
+    </Alert>
+  );
+}
 
 function LoginPageContent() {
   const [isLoading, setIsLoading] = useState(true);
@@ -93,9 +124,9 @@ function LoginPageContent() {
     const rawToken = getCookieFromDocument("token");
     if (rawToken && !isJwtExpired(rawToken)) {
       // User already logged in - redirect to return URL or default
-      const returnUrl = consumeReturnUrl();
+      const returnUrl = consumeReturnUrl(getRuntimeBackendBaseUrl());
       if (returnUrl) {
-        router.replace(returnUrl);
+        router.replace(getUiPageUrl(returnUrl, true));
       } else {
         router.replace("/ui");
       }
@@ -134,11 +165,11 @@ function LoginPageContent() {
             router.push("/ui/?login=success");
           } else {
             // Normal (non-control-plane) login — follow the server's redirect
-            const returnUrl = consumeReturnUrl();
+            const returnUrl = consumeReturnUrl(getRuntimeBackendBaseUrl());
             if (returnUrl) {
-              router.push(returnUrl);
+              router.push(getUiPageUrl(returnUrl, true));
             } else {
-              router.push(data.redirect_url);
+              router.push(getUiPageUrl(data.redirect_url, true));
             }
           }
         },
@@ -170,22 +201,19 @@ function LoginPageContent() {
                 <h2 className="text-3xl font-semibold text-foreground">🚅 LiteLLM</h2>
               </div>
 
-              <Alert
-                message="Admin UI Disabled"
-                description={
-                  <>
-                    <p className="text-sm">
-                      The Admin UI has been disabled by the administrator. To re-enable it, please update the following
-                      environment variable:
-                    </p>
-                    <p className="mt-2 text-sm">
-                      <code className="bg-muted px-1 py-0.5 rounded-sm text-xs">DISABLE_ADMIN_UI=False</code>
-                    </p>
-                  </>
-                }
-                type="warning"
-                showIcon
-              />
+              <Alert variant="warning">
+                <TriangleAlert />
+                <AlertTitle>Admin UI Disabled</AlertTitle>
+                <AlertDescription>
+                  <p className="text-sm">
+                    The Admin UI has been disabled by the administrator. To re-enable it, please update the following
+                    environment variable:
+                  </p>
+                  <p className="mt-2 text-sm">
+                    <code className="bg-muted px-1 py-0.5 rounded-sm text-xs">DISABLE_ADMIN_UI=False</code>
+                  </p>
+                </AlertDescription>
+              </Alert>
             </div>
           </CardContent>
         </Card>
@@ -209,31 +237,32 @@ function LoginPageContent() {
               </div>
 
               {!uiConfig?.hide_default_credentials_hint && (
-                <Alert
-                  message="Default Credentials"
-                  description={
-                    <>
-                      <p className="text-sm">
-                        By default, Username is <code className="bg-muted px-1 py-0.5 rounded-sm text-xs">admin</code>{" "}
-                        and Password is your set LiteLLM Proxy
-                        <code className="bg-muted px-1 py-0.5 rounded-sm text-xs">MASTER_KEY</code>.
-                      </p>
-                      <p className="mt-2 text-sm">
-                        Need to set UI credentials or SSO?{" "}
-                        <a href="https://docs.litellm.ai/docs/proxy/ui" target="_blank" rel="noopener noreferrer">
-                          Check the documentation
-                        </a>
-                        .
-                      </p>
-                    </>
-                  }
-                  type="info"
-                  icon={<InfoCircleOutlined />}
-                  showIcon
-                />
+                <Alert variant="info">
+                  <Info />
+                  <AlertTitle>Default Credentials</AlertTitle>
+                  <AlertDescription>
+                    <p className="text-sm">
+                      By default, Username is <code className="bg-muted px-1 py-0.5 rounded-sm text-xs">admin</code> and
+                      Password is your set LiteLLM Proxy
+                      <code className="bg-muted px-1 py-0.5 rounded-sm text-xs">MASTER_KEY</code>.
+                    </p>
+                    <p className="mt-2 text-sm">
+                      Need to set UI credentials or SSO?{" "}
+                      <a href="https://docs.litellm.ai/docs/proxy/ui" target="_blank" rel="noopener noreferrer">
+                        Check the documentation
+                      </a>
+                      .
+                    </p>
+                  </AlertDescription>
+                </Alert>
               )}
 
-              {error && <Alert message={error} type="error" showIcon />}
+              {error && (
+                <Alert variant="error">
+                  <CircleAlert />
+                  <AlertTitle>{error}</AlertTitle>
+                </Alert>
+              )}
 
               <form onSubmit={form.handleSubmit(handleSubmit)}>
                 <FieldGroup>
@@ -326,22 +355,7 @@ function LoginPageContent() {
                 </FieldGroup>
               </form>
             </div>
-            {uiConfig?.sso_configured && (
-              <Alert
-                type="info"
-                showIcon
-                closable
-                className="mt-4"
-                message={
-                  <span>
-                    Single Sign-On (SSO) is enabled. LiteLLM no longer automatically redirects to the SSO login flow
-                    upon loading this page. To re-enable auto-redirect-to-SSO, set{" "}
-                    <code className="bg-muted px-1 py-0.5 rounded-sm text-xs">AUTO_REDIRECT_UI_LOGIN_TO_SSO=true</code>{" "}
-                    in your environment configuration.
-                  </span>
-                }
-              />
-            )}
+            {uiConfig?.sso_configured && <SsoEnabledNotice />}
           </TooltipProvider>
         </CardContent>
       </Card>

@@ -1,10 +1,11 @@
-import { act, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import RealtimePlayground from "./RealtimePlayground";
 
 vi.mock("@/components/networking", () => ({
   getProxyBaseUrl: () => "https://proxy.example.com",
+  getGatewayBaseUrl: () => "https://gateway.example.com",
 }));
 
 class FakeSocket {
@@ -112,7 +113,7 @@ describe("RealtimePlayground", () => {
 
     await user.click(screen.getByRole("button", { name: /Connect/i }));
 
-    expect(latestSocket().url).toBe("wss://proxy.example.com/v1/realtime?model=gpt-realtime");
+    expect(latestSocket().url).toBe("wss://gateway.example.com/v1/realtime?model=gpt-realtime");
     expect(latestSocket().protocols).toEqual(["realtime", "openai-insecure-api-key.sk-realtime"]);
   });
 
@@ -177,7 +178,9 @@ describe("RealtimePlayground", () => {
     render(<RealtimePlayground {...props} />);
 
     await connect(user);
-    await user.type(screen.getByPlaceholderText("Type a message or use the mic..."), "hello there");
+    fireEvent.change(screen.getByPlaceholderText("Type a message or use the mic..."), {
+      target: { value: "hello there" },
+    });
     await user.click(screen.getByRole("button", { name: /send/i }));
 
     const payloads = latestSocket().sent.map((raw) => JSON.parse(raw));

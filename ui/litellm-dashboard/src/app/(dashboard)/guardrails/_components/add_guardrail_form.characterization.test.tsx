@@ -1,7 +1,7 @@
 import React from "react";
 import { screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { renderWithProviders } from "@/../tests/test-utils";
+import { chooseSelectOption, renderWithProviders } from "@/../tests/test-utils";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import AddGuardrailForm from "./add_guardrail_form";
 
@@ -10,6 +10,7 @@ vi.mock("@/components/networking", () => ({
   getGuardrailProviderSpecificParams: vi.fn(),
   getGuardrailUISettings: vi.fn(),
   modelAvailableCall: vi.fn(),
+  modelHubCall: vi.fn(),
 }));
 
 import * as networking from "@/components/networking";
@@ -37,6 +38,7 @@ const uiSettings = {
   supported_entities: [],
   supported_actions: [],
   supported_modes: ["pre_call", "post_call"],
+  providers_without_directional_logging_only_scope: [],
   pii_entity_categories: [],
 };
 
@@ -62,6 +64,7 @@ describe("AddGuardrailForm create payload characterization", () => {
     vi.mocked(networking.getGuardrailUISettings).mockResolvedValue(uiSettings);
     vi.mocked(networking.getGuardrailProviderSpecificParams).mockResolvedValue(providerParams);
     vi.mocked(networking.modelAvailableCall).mockResolvedValue({ data: [{ id: "gpt-5" }] });
+    vi.mocked(networking.modelHubCall).mockResolvedValue({ data: [] });
     vi.mocked(networking.createGuardrailCall).mockResolvedValue({ guardrail_id: "new" });
   });
 
@@ -88,6 +91,23 @@ describe("AddGuardrailForm create payload characterization", () => {
     });
   });
 
+  it("sends stream_scope when a mode is restricted to streaming requests", async () => {
+    const user = userEvent.setup({ delay: null });
+    renderForm();
+
+    await user.type(await screen.findByLabelText("Guardrail Name"), "my-bedrock");
+    await pickProvider(user, "Bedrock Guardrail");
+    await chooseSelectOption(user, screen.getByLabelText("pre_call applies to"), "Streaming only");
+    await user.type(await screen.findByPlaceholderText("The guardrail id on Bedrock"), "gr-123");
+    await user.click(screen.getByRole("button", { name: "Next" }));
+    await user.click(await screen.findByRole("button", { name: "Create Guardrail" }));
+
+    await waitFor(() => expect(networking.createGuardrailCall).toHaveBeenCalledTimes(1));
+    expect(payload()).toMatchObject({
+      litellm_params: { stream_scope: "streaming" },
+    });
+  });
+
   it("switches mode from the seeded string to an array once the user touches the multi select", async () => {
     const user = userEvent.setup({ delay: null });
     renderForm();
@@ -103,6 +123,87 @@ describe("AddGuardrailForm create payload characterization", () => {
 
     await waitFor(() => expect(networking.createGuardrailCall).toHaveBeenCalledTimes(1));
     expect(payload()).toMatchObject({ litellm_params: { mode: ["pre_call", "post_call"] } });
+  });
+
+  it("sends the selected output logging-only scope", async () => {
+    vi.mocked(networking.getGuardrailUISettings).mockResolvedValue({
+      ...uiSettings,
+      supported_modes: ["pre_call", "logging_only"],
+    });
+    const user = userEvent.setup({ delay: null });
+    renderForm();
+
+    await user.type(await screen.findByLabelText("Guardrail Name"), "my-bedrock");
+    await pickProvider(user, "Bedrock Guardrail");
+    await user.click(screen.getByLabelText("Mode"));
+    await user.click((await screen.findAllByText("logging_only")).at(-1) as HTMLElement);
+    await chooseSelectOption(user, await screen.findByLabelText("Logging only scope"), "Output only (response)");
+
+    await user.type(await screen.findByPlaceholderText("The guardrail id on Bedrock"), "gr-123");
+    await user.click(screen.getByRole("button", { name: "Next" }));
+    await user.click(await screen.findByRole("button", { name: "Create Guardrail" }));
+
+    await waitFor(() => expect(networking.createGuardrailCall).toHaveBeenCalledTimes(1));
+    expect(payload()?.litellm_params.logging_only_scope).toBe("output");
+  });
+
+  it("disables and unchecks the continue toggle under a directional scope", async () => {
+    vi.mocked(networking.getGuardrailUISettings).mockResolvedValue({
+      ...uiSettings,
+      supported_modes: ["pre_call", "logging_only"],
+    });
+    const user = userEvent.setup({ delay: null });
+    renderForm();
+
+    await pickProvider(user, "Bedrock Guardrail");
+    await user.click(screen.getByLabelText("Mode"));
+    await user.click((await screen.findAllByText("logging_only")).at(-1) as HTMLElement);
+    await chooseSelectOption(user, await screen.findByLabelText("Logging only scope"), "Input only (request)");
+
+    const toggle = await screen.findByRole("switch", {
+      name: "Continue observing the response after a flagged request",
+    });
+    expect(toggle).toHaveAttribute("aria-disabled", "true");
+    expect(toggle).not.toBeChecked();
+  });
+
+  it("hides directional scope choices for providers that do not support them", async () => {
+    vi.mocked(networking.getGuardrailUISettings).mockResolvedValue({
+      ...uiSettings,
+      supported_modes: ["pre_call", "logging_only"],
+      providers_without_directional_logging_only_scope: ["xecguard"],
+    });
+    vi.mocked(networking.getGuardrailProviderSpecificParams).mockResolvedValue({
+      ...providerParams,
+      xecguard: { ui_friendly_name: "XecGuard" },
+    });
+    const user = userEvent.setup({ delay: null });
+    renderForm();
+
+    await pickProvider(user, "XecGuard");
+    await user.click(screen.getByLabelText("Mode"));
+    await user.click((await screen.findAllByText("logging_only")).at(-1) as HTMLElement);
+    await user.click(await screen.findByLabelText("Logging only scope"));
+
+    expect(await screen.findByRole("option", { name: "Default (request and response)" })).toBeInTheDocument();
+    expect(screen.queryByRole("option", { name: "Input only (request)" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("option", { name: "Output only (response)" })).not.toBeInTheDocument();
+  });
+
+  it("hides logging-only scope and omits it from a pre-call payload", async () => {
+    const user = userEvent.setup({ delay: null });
+    renderForm();
+
+    await user.type(await screen.findByLabelText("Guardrail Name"), "my-bedrock");
+    await pickProvider(user, "Bedrock Guardrail");
+    expect(screen.queryByLabelText("Logging only scope")).not.toBeInTheDocument();
+
+    await user.type(await screen.findByPlaceholderText("The guardrail id on Bedrock"), "gr-123");
+    await user.click(screen.getByRole("button", { name: "Next" }));
+    await user.click(await screen.findByRole("button", { name: "Create Guardrail" }));
+
+    await waitFor(() => expect(networking.createGuardrailCall).toHaveBeenCalledTimes(1));
+    expect(payload()?.litellm_params).not.toHaveProperty("logging_only_scope");
   });
 
   it("blocks Next when the user deselects every mode", async () => {
@@ -252,14 +353,13 @@ describe("AddGuardrailForm create payload characterization", () => {
     await user.type(await screen.findByLabelText("Guardrail Name"), "my-bedrock");
     await pickProvider(user, "Bedrock Guardrail");
 
-    await user.click(screen.getByLabelText("Always On"));
-    await user.click((await screen.findAllByText("Yes")).at(-1) as HTMLElement);
-
-    await user.click(screen.getByLabelText("Skip system messages in guardrail"));
-    await user.click((await screen.findAllByText(/exclude from guardrail scan/)).at(-1) as HTMLElement);
-
-    await user.click(screen.getByLabelText("Skip tool messages in guardrail"));
-    await user.click((await screen.findAllByText(/always include in scan/)).at(-1) as HTMLElement);
+    await chooseSelectOption(user, screen.getByLabelText("Always On"), "Yes");
+    await chooseSelectOption(
+      user,
+      screen.getByLabelText("Skip system messages in guardrail"),
+      /exclude from guardrail scan/,
+    );
+    await chooseSelectOption(user, screen.getByLabelText("Skip tool messages in guardrail"), /always include in scan/);
 
     await user.type(await screen.findByPlaceholderText("The guardrail id on Bedrock"), "gr-123");
     await user.click(screen.getByRole("button", { name: "Next" }));

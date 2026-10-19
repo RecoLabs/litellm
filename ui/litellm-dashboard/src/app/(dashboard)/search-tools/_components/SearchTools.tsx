@@ -1,8 +1,7 @@
 import { isAdminRole } from "@/utils/roles";
 import { useQuery } from "@tanstack/react-query";
-import { Modal } from "antd";
 import React, { useState } from "react";
-import { z } from "zod/v4";
+import { z } from "zod";
 import DeleteResourceModal from "@/components/common_components/DeleteResourceModal";
 import { toast } from "@/lib/toast";
 import {
@@ -12,7 +11,7 @@ import {
   updateSearchTool,
 } from "@/components/networking";
 import { PasswordInput } from "@/components/shared/PasswordInput";
-import { FieldGroup } from "@/components/shared/form/field";
+import { FieldGroup } from "@/components/ui/field";
 import { FormField } from "@/components/shared/form/FormField";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -25,6 +24,7 @@ import { buildSearchToolPayload } from "./searchToolPayload";
 import SearchToolTable from "./SearchToolTable";
 import { SearchToolView } from "./SearchToolView";
 import { AvailableSearchProvider, SearchTool } from "./types";
+import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 
 interface SearchToolsProps {
   accessToken: string | null;
@@ -37,6 +37,7 @@ const editSearchToolShape = {
   search_provider: z.string().min(1, "Please select a search provider"),
   api_key: z.string().nullish(),
   description: z.string().nullish(),
+  input_cost_per_query: z.number().nonnegative("Cost per query cannot be negative").nullish(),
 };
 
 const editSearchToolSchema = z.object(editSearchToolShape);
@@ -94,6 +95,7 @@ const SearchTools: React.FC<SearchToolsProps> = ({ accessToken, userRole, userID
       search_provider: tool.litellm_params.search_provider,
       api_key: tool.litellm_params.api_key,
       description: tool.search_tool_info?.description,
+      input_cost_per_query: tool.litellm_params.input_cost_per_query,
     };
     form.reset(editFormValues);
     setSelectedToolId(toolId);
@@ -204,6 +206,25 @@ const SearchTools: React.FC<SearchToolsProps> = ({ accessToken, userRole, userID
           )}
         </FormField>
 
+        <FormField
+          control={form.control}
+          name="input_cost_per_query"
+          label="Cost per Query (USD)"
+          description="Overrides the cost map price for this tool. Leave blank to use the provider's default price"
+        >
+          {({ ref, value, onChange, ...field }) => (
+            <Input
+              {...field}
+              ref={ref}
+              type="number"
+              step="any"
+              value={value ?? ""}
+              onChange={(event) => onChange(event.target.value === "" ? null : event.target.valueAsNumber)}
+              placeholder="e.g., 0.007"
+            />
+          )}
+        </FormField>
+
         <FormField control={form.control} name="description" label="Description">
           {({ ref, value, ...field }) => (
             <Textarea {...field} ref={ref} value={value ?? ""} rows={3} placeholder="Description of this search tool" />
@@ -284,19 +305,36 @@ const SearchTools: React.FC<SearchToolsProps> = ({ accessToken, userRole, userID
         setModalVisible={setCreateModalVisible}
       />
 
-      <Modal
-        title="Edit Search Tool"
+      <Dialog
         open={isEditModalVisible}
-        onOk={handleEditSubmit}
-        onCancel={() => {
-          setEditModalVisible(false);
-          form.reset(EMPTY_EDIT_VALUES);
-          setSelectedToolId(null);
+        onOpenChange={(open) => {
+          if (!open) {
+            setEditModalVisible(false);
+            form.reset(EMPTY_EDIT_VALUES);
+            setSelectedToolId(null);
+          }
         }}
-        width={600}
       >
-        {renderEditForm()}
-      </Modal>
+        <DialogContent className="max-h-[calc(100dvh-2rem)] overflow-y-auto sm:max-w-[600px]">
+          <DialogHeader>
+            <DialogTitle>Edit Search Tool</DialogTitle>
+          </DialogHeader>
+          {renderEditForm()}
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => {
+                setEditModalVisible(false);
+                form.reset(EMPTY_EDIT_VALUES);
+                setSelectedToolId(null);
+              }}
+            >
+              Cancel
+            </Button>
+            <Button onClick={handleEditSubmit}>OK</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <h1 className="text-lg font-semibold text-foreground">Search Tools</h1>
       <p className="mt-2 text-sm text-muted-foreground">Configure and manage your search providers</p>

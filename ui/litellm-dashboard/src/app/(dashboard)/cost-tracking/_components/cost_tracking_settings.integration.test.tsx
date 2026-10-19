@@ -1,6 +1,6 @@
 import React from "react";
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { screen, waitFor } from "@testing-library/react";
+import { fireEvent, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { renderWithProviders } from "../../../../../tests/test-utils";
 import CostTrackingSettings from "./cost_tracking_settings";
@@ -40,7 +40,7 @@ vi.mock("@/components/llm_calls/fetch_models", () => ({
   fetchAvailableModels: vi.fn().mockResolvedValue([]),
 }));
 
-vi.mock("@/components/HelpLink", () => ({
+vi.mock("@/components/DocsMenu", () => ({
   DocsMenu: () => null,
 }));
 
@@ -72,7 +72,7 @@ describe("CostTrackingSettings submit paths", () => {
     const header = screen.getByText("Provider Discounts").closest("button");
     if (header) await user.click(header);
     await user.click(await screen.findByRole("button", { name: /add provider discount/i }));
-    await screen.findByText("Add Provider Discount", { selector: "h2" });
+    await screen.findByRole("dialog", { name: "Add Provider Discount" });
   };
 
   const submitDiscount = () =>
@@ -87,12 +87,26 @@ describe("CostTrackingSettings submit paths", () => {
 
     await user.click(screen.getAllByRole("combobox")[0]);
     await user.click((await screen.findAllByRole("option"))[0]);
-    await user.type(screen.getByLabelText(/Discount Percentage/i), "5");
+    fireEvent.change(screen.getByLabelText(/Discount Percentage/i), { target: { value: "5" } });
     await user.click(submitDiscount());
 
     await waitFor(() => expect(stableDiscountCallbacks.handleAddProvider).toHaveBeenCalled());
     expect(stableDiscountCallbacks.handleAddProvider).toHaveBeenCalledTimes(1);
-    expect(stableDiscountCallbacks.handleAddProvider).toHaveBeenCalledWith("OpenAI", "5");
+    expect(stableDiscountCallbacks.handleAddProvider).toHaveBeenCalledWith("OpenAI", "5", "");
+  });
+
+  it("passes the model pattern through to the add handler", async () => {
+    const user = userEvent.setup();
+    await openDiscountModal(user);
+
+    await user.click(screen.getAllByRole("combobox")[0]);
+    await user.click((await screen.findAllByRole("option"))[0]);
+    fireEvent.change(screen.getByLabelText(/Model pattern/i), { target: { value: "claude-*" } });
+    fireEvent.change(screen.getByLabelText(/Discount Percentage/i), { target: { value: "20" } });
+    await user.click(submitDiscount());
+
+    await waitFor(() => expect(stableDiscountCallbacks.handleAddProvider).toHaveBeenCalled());
+    expect(stableDiscountCallbacks.handleAddProvider).toHaveBeenCalledWith("OpenAI", "20", "claude-*");
   });
 
   it("requests the margin exactly once per click", async () => {
@@ -101,11 +115,11 @@ describe("CostTrackingSettings submit paths", () => {
     const header = screen.getByText("Fee/Price Margin").closest("button");
     if (header) await user.click(header);
     await user.click(await screen.findByRole("button", { name: /add provider margin/i }));
-    await screen.findByText("Add Provider Margin", { selector: "h2" });
+    await screen.findByRole("dialog", { name: "Add Provider Margin" });
 
     await user.click(screen.getAllByRole("combobox")[0]);
     await user.click((await screen.findAllByRole("option"))[0]);
-    await user.type(screen.getByLabelText(/Margin Percentage/i), "10");
+    fireEvent.change(screen.getByLabelText(/Margin Percentage/i), { target: { value: "10" } });
 
     const submit = screen
       .getAllByRole("button")
@@ -127,7 +141,7 @@ describe("CostTrackingSettings submit paths", () => {
 
     await waitFor(() => expect(stableDiscountCallbacks.handleAddProvider).toHaveBeenCalled());
     expect(stableDiscountCallbacks.handleAddProvider).toHaveBeenCalledTimes(1);
-    expect(stableDiscountCallbacks.handleAddProvider).toHaveBeenCalledWith("OpenAI", "5");
+    expect(stableDiscountCallbacks.handleAddProvider).toHaveBeenCalledWith("OpenAI", "5", "");
   });
 
   it("requests the margin exactly once when Enter is pressed in the percentage field", async () => {
@@ -136,7 +150,7 @@ describe("CostTrackingSettings submit paths", () => {
     const header = screen.getByText("Fee/Price Margin").closest("button");
     if (header) await user.click(header);
     await user.click(await screen.findByRole("button", { name: /add provider margin/i }));
-    await screen.findByText("Add Provider Margin", { selector: "h2" });
+    await screen.findByRole("dialog", { name: "Add Provider Margin" });
 
     await user.click(screen.getAllByRole("combobox")[0]);
     await user.click((await screen.findAllByRole("option"))[0]);

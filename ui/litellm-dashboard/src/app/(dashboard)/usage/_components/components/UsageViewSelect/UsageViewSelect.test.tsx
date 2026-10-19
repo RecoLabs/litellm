@@ -1,6 +1,7 @@
 import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { chooseSelectOption } from "@/../tests/test-utils";
 import { UsageViewSelect } from "./UsageViewSelect";
 
 const openMenu = async (user: ReturnType<typeof userEvent.setup>) => {
@@ -23,9 +24,8 @@ describe("UsageViewSelect", () => {
     const user = userEvent.setup();
     const { container } = render(<UsageViewSelect value="global" onChange={mockOnChange} userRole="Internal User" />);
 
-    expect(screen.getByText("Usage View")).toBeInTheDocument();
-    expect(screen.getByText("Select the usage data you want to view")).toBeInTheDocument();
-    expect(screen.getByRole("combobox")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Usage" })).toBeInTheDocument();
+    expect(screen.getByRole("combobox", { name: "Select the usage data you want to view" })).toBeInTheDocument();
 
     await openMenu(user);
     expect(offers(container, "Your Usage")).toBe(true);
@@ -35,9 +35,7 @@ describe("UsageViewSelect", () => {
     const user = userEvent.setup();
     render(<UsageViewSelect value="global" onChange={mockOnChange} userRole="Admin" />);
 
-    await openMenu(user);
-    const matches = screen.getAllByText("Team Usage");
-    await user.click(matches[matches.length - 1]);
+    await chooseSelectOption(user, screen.getByRole("combobox"), /^Team Usage/);
 
     expect(mockOnChange).toHaveBeenCalled();
     expect(mockOnChange.mock.calls[0][0]).toBe("team");

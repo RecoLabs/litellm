@@ -6,6 +6,7 @@
 
 import React, { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { UiLoadingSpinner } from "@/components/ui/ui-loading-spinner";
 import { toast } from "@/lib/toast";
 import { fetchAvailableModels, ModelGroup } from "@/components/llm_calls/fetch_models";
@@ -20,9 +21,10 @@ interface AddFallbacksProps {
   accessToken: string;
   value?: Fallbacks; // Current fallbacks value from form
   onChange?: (fallbacks: Fallbacks) => Promise<void>; // Callback to update form value
+  disabledReason?: string; // When set, the button is disabled and this explains why
 }
 
-export default function AddFallbacks({ accessToken, value = [], onChange }: AddFallbacksProps) {
+export default function AddFallbacks({ accessToken, value = [], onChange, disabledReason }: AddFallbacksProps) {
   const [isModalVisible, setIsModalVisible] = useState(false);
   const [modelInfo, setModelInfo] = useState<ModelGroup[]>([]);
   const [modalKey, setModalKey] = useState(0); // Key to force remount of form when modal opens
@@ -116,10 +118,22 @@ export default function AddFallbacks({ accessToken, value = [], onChange }: AddF
 
   return (
     <div>
-      <Button className="mx-auto" onClick={() => setIsModalVisible(true)}>
-        <span>+</span>
-        Add Fallbacks
-      </Button>
+      {disabledReason ? (
+        <Tooltip>
+          <TooltipTrigger render={<span className="inline-flex" tabIndex={0} />}>
+            <Button className="mx-auto" disabled aria-disabled="true">
+              <span>+</span>
+              Add Fallbacks
+            </Button>
+          </TooltipTrigger>
+          <TooltipContent>{disabledReason}</TooltipContent>
+        </Tooltip>
+      ) : (
+        <Button className="mx-auto" onClick={() => setIsModalVisible(true)}>
+          <span>+</span>
+          Add Fallbacks
+        </Button>
+      )}
       <AddFallbacksModal open={isModalVisible} onCancel={handleCancel}>
         <FallbackSelectionForm
           key={modalKey}
@@ -131,7 +145,7 @@ export default function AddFallbacks({ accessToken, value = [], onChange }: AddF
         />
         {/* Footer with Cancel and Save buttons */}
         {groups.length > 0 && (
-          <div className="flex items-center justify-end space-x-3 pt-6 mt-6 border-t border-gray-100">
+          <div className="flex items-center justify-end space-x-3 pt-6 mt-6 border-t border-border">
             <Button variant="outline" onClick={handleCancel} disabled={isSaving}>
               Cancel
             </Button>
